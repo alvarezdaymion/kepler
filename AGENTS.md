@@ -1,0 +1,33 @@
+# AGENTS.md
+
+Kepler reads a business's data sources every 15 minutes, computes its funnel against a goal, ranks bottlenecks by revenue at stake, and judges ads against a target cost per lead.
+
+If you were asked to set Kepler up for someone, follow [SETUP.md](SETUP.md). The rules below are for changing the code.
+
+## Layout
+
+- `src/kepler/config.py`: config schema and defaults; `templates/kepler.example.toml` mirrors it.
+- `src/kepler/sources/`: one module per system. `base.py` defines `SourceData`, `AdRow` and the `Source` / `AdSource` protocols.
+- `src/kepler/metrics.py`: merges sources into one store; unknown metrics return `None`.
+- `src/kepler/funnel.py`, `bottlenecks.py`, `journey.py`, `lanes.py`, `ads.py`: the math. Pure functions over the store.
+- `src/kepler/guard.py`, `autocut.py`: the bad-data guard and the only write path.
+- `src/kepler/analysis.py`: the optional model read-out.
+- `src/kepler/controller.py`: one tick. `web.py`: HTML. `cli.py`: commands.
+
+## Rules
+
+- **Math in code, judgment in the model.** Every number on the page is computed in Python. The analysis step receives computed numbers and must not be asked to calculate totals, rates or money.
+- **Unknown is not zero.** A metric no source provides is `None` and renders as "Not tracked". A source that read successfully and found nothing is a real 0.
+- **Stale is labelled.** A failed read keeps the last good copy and marks the source stale. A failing source, auto-cut or analysis never stops the tick.
+- **Read-only.** Connectors send GET requests. The single exception is `MetaSource.pause_ad`, whose `_post` refuses anything but `status=PAUSED` on one numeric ad ID. Do not add other writes.
+- **Auto-cut stays off by default** and only pauses. It must never turn an ad on, raise a budget or edit anything else. Every candidate passes `guard.check` first, in dry-run and live alike.
+- **Key ads by ID, never by name.**
+- **No metered calls in the 15-minute loop** other than the analysis step, which runs at most once per `analysis.every_minutes`.
+- **Secrets** come from environment variables. Never commit `.env`, `kepler.toml`, `state/` or `site/`, and never put tokens in errors, logs or the page (`http.py` errors omit headers).
+- Runtime code is standard library only; the Anthropic SDK is an optional extra.
+
+## Development
+
+- Python 3.11+, `uv`. Run `uv run pytest` and `uv run ruff check` before a PR.
+- Add a failing test with each behavior change. Network code is tested with a fake transport; tests never call real APIs.
+- Test data is synthetic: short fake IDs, no real names, emails or phone numbers.
