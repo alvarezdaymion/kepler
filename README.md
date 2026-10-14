@@ -2,7 +2,7 @@
 
 Kepler is a one-screen revenue dashboard for a small business that sells through a funnel (ads or content → opt-in → call → sale). You give it one goal, such as one sale a day, and your conversion benchmarks. It works the funnel backwards from that goal, reads every data source every 15 minutes, and ranks your bottlenecks by how much monthly revenue each one is costing you. The math is plain Python; an optional language model only writes the read-out from numbers Kepler already computed. It also grades your acquisition lanes and judges every ad against your target cost per lead, with an auto-cut that ships switched off.
 
-Walkthrough video: https://youtube.com/@... (link to be added) · Project page: [daymionalvarez.com/portfolio/kepler](https://daymionalvarez.com/portfolio/kepler)
+Walkthrough video: [youtu.be/_C43Hci6WtE](https://youtu.be/_C43Hci6WtE) · Project page: [daymionalvarez.com/portfolio/kepler](https://daymionalvarez.com/portfolio/kepler)
 
 ## Quickstart
 
