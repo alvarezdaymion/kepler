@@ -1,0 +1,10 @@
+# Linux systemd (user unit). Copy kepler.service and kepler.timer to ~/.config/systemd/user/, edit paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now kepler.timer
+[Unit]
+Description=Kepler controller tick
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/kepler
+EnvironmentFile=/path/to/kepler/.env
+ExecStart=/path/to/uv run kepler run --quiet

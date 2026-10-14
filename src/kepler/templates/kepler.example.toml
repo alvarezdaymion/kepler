@@ -1,0 +1,119 @@
+# Kepler configuration. Copy to kepler.toml (`kepler init` does it) and edit.
+# Every value has a default in src/kepler/config.py; delete anything you don't need to change.
+# Credentials never go in this file. They come from environment variables (see .env.example).
+
+[business]
+name = "Your business"
+currency = "USD"
+
+[goal]
+sales_per_day = 1          # the goal everything is worked back from
+revenue_per_sale = 1500    # average revenue per sale, used to put a dollar value on each bottleneck
+
+[windows]
+pace_days = 7              # "per day" numbers are the average of the last N complete days
+rate_days = 30             # conversion rates use the last N days (more volume, steadier rates)
+lane_days = 7              # lane KPIs cover the last N complete days
+
+# The funnel, top to bottom. Each step converts one daily metric into the next.
+# benchmark = the rate you should hit; min_volume = people needed before the rate is judged.
+[[funnel.steps]]
+from = "impressions"
+to = "clicks"
+label = "Ad click-through"
+benchmark = 0.015
+min_volume = 2000
+action = "Test new hooks and creatives."
+
+[[funnel.steps]]
+from = "clicks"
+to = "optins"
+label = "Click to opt-in"
+benchmark = 0.30
+min_volume = 100
+action = "Tighten the landing page: one promise, one field, fast load."
+
+[[funnel.steps]]
+from = "optins"
+to = "booked"
+label = "Opt-in to booked call"
+benchmark = 0.12
+min_volume = 50
+action = "Put the booking link in front of every new lead within minutes."
+
+[[funnel.steps]]
+from = "booked"
+to = "showed"
+label = "Booked to held call"
+benchmark = 0.65
+min_volume = 20
+action = "Add reminders by text and email; confirm the day before."
+
+[[funnel.steps]]
+from = "showed"
+to = "sales"
+label = "Held call to sale"
+benchmark = 0.25
+min_volume = 20
+action = "Review call recordings against your offer and objections."
+
+[ads]
+target_cpl = 25            # T, your target cost per lead
+floor_multiple = 2         # under 2T spend an ad is "testing" and never cut
+cut_multiple = 2           # over 2T per lead is a cut
+warning_max_hours = 72     # T < CPL <= 2T is a warning; cut if it stays there longer than this
+judge_days = 30            # verdicts use cumulative numbers over this many days
+leads_from = "ads"         # "ads" = the ad platform's lead count; "ad_leads" = a CRM CSV keyed by ad ID
+
+[auto_cut]
+mode = "off"               # off | dry-run | live. Run dry-run for a while and read the Ad health page first.
+source = "meta"            # the source that can re-read an ad and pause it
+max_pauses_per_run = 3     # more candidates than this at once = hold everything
+max_snapshot_age_minutes = 20
+spend_tolerance = 1.0      # hold if the snapshot's spend is over the fresh read by more than this
+max_cpm = 500              # hold if cost per 1,000 impressions is above this (impossible numbers)
+
+[analysis]
+enabled = false            # needs `uv sync --extra llm` and ANTHROPIC_API_KEY
+every_minutes = 1440       # at most one model call per day; the 15-minute loop never calls it more often
+model = "claude-opus-5-5"
+effort = "low"
+
+[paths]
+state = "state"            # cache, snapshot.json, logs (keep out of git)
+site = "site"              # generated HTML
+
+# ---- Sources ----------------------------------------------------------------------------
+# Uncomment what you use. A source that isn't configured leaves its metrics "Not tracked".
+
+# [[sources]]
+# name = "meta"
+# type = "meta"               # env: META_ACCESS_TOKEN, META_AD_ACCOUNT_ID
+# max_age_minutes = 30
+# rename = { meta_leads = "optins" }   # only if Meta's lead count is your opt-in count (no CRM CSV)
+# campaign_ids = []           # optional: auto-cut may only pause ads in these campaigns
+
+# [[sources]]
+# name = "stripe"
+# type = "stripe"             # env: STRIPE_API_KEY (restricted, read-only)
+# max_age_minutes = 30
+# min_sale_amount = 0
+
+# [[sources]]
+# name = "crm"
+# type = "csv"                # export from your CRM: date,optins,booked,showed
+# path = "data/crm-daily.csv"
+# max_age_minutes = 1500      # a daily export is fresh for about a day
+
+# [[sources]]
+# name = "crm-ad-leads"
+# type = "csv"
+# kind = "ad_leads"           # date,ad_id,leads (set ads.leads_from = "ad_leads")
+# path = "data/crm-ad-leads.csv"
+# max_age_minutes = 1500
+
+# [[sources]]
+# name = "organic"
+# type = "csv"                # date,search_clicks,search_impressions,video_views
+# path = "data/organic-daily.csv"
+# max_age_minutes = 4320      # Search Console data lags 2-3 days

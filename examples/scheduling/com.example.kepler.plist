@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd: one tick every 15 minutes.
+  1. Replace /path/to/kepler and /path/to/uv (run `which uv`).
+  2. cp examples/scheduling/com.example.kepler.plist ~/Library/LaunchAgents/
+  3. launchctl load ~/Library/LaunchAgents/com.example.kepler.plist
+  The command loads .env from the repo folder, so keep credentials there (never committed).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.kepler</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>cd /path/to/kepler &amp;&amp; set -a &amp;&amp; . ./.env &amp;&amp; set +a &amp;&amp; /path/to/uv run kepler run --quiet</string>
+  </array>
+  <key>StartInterval</key><integer>900</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/tmp/kepler.log</string>
+  <key>StandardErrorPath</key><string>/tmp/kepler.log</string>
+</dict>
+</plist>

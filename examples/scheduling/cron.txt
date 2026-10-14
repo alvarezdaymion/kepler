@@ -1,0 +1,3 @@
+# crontab -e, then add (edit the path). Runs one tick every 15 minutes.
+# cron has a minimal PATH and no shell profile: give uv's full path and load your .env.
+*/15 * * * * cd /path/to/kepler && set -a && . ./.env && set +a && /path/to/uv run kepler run --quiet >> state/cron.log 2>&1
