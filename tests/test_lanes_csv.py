@@ -75,3 +75,30 @@ def test_crm_export_rejects_missing_or_invalid_counts(tmp_path, content):
     p.write_text(content)
     with pytest.raises(ValueError):
         CsvSource("crm", p, kind="ad_leads").fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+
+
+@pytest.mark.parametrize("kind", ["daily", "ad_leads"])
+@pytest.mark.parametrize("day", ["20260130", "2026-W05-5"])
+def test_csv_rejects_noncanonical_dates_before_window_filtering(tmp_path, kind, day):
+    path = tmp_path / "export.csv"
+    header, values = ("date,optins", "9") if kind == "daily" else ("date,ad_id,leads", "1,9")
+    path.write_text("%s\n%s,%s\n" % (header, day, values))
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        CsvSource("crm", path, kind).fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+
+
+@pytest.mark.parametrize("kind,content", [
+    ("daily", "date,optins,optins\n2026-01-30,9,0\n"),
+    ("daily", "date,optins, optins\n2026-01-30,9,0\n"),
+    ("daily", "date,optins,\n2026-01-30,9,0\n"),
+    ("daily", "date,optins\n2026-01-30,0,9\n"),
+    ("daily", "date,optins\n2026-01-30\n"),
+    ("ad_leads", "date,ad_id,leads,leads\n2026-01-30,1,9,0\n"),
+    ("ad_leads", "date,ad_id,leads\n2026-01-30,1,0,9\n"),
+    ("ad_leads", "date,ad_id,leads\n2025-12-01,1,0,9\n"),
+])
+def test_csv_rejects_ambiguous_headers_and_row_widths(tmp_path, kind, content):
+    path = tmp_path / "export.csv"
+    path.write_text(content)
+    with pytest.raises(ValueError):
+        CsvSource("crm", path, kind).fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))

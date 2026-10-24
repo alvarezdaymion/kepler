@@ -11,7 +11,8 @@ kind = "ad_leads": leads per ad from your CRM, keyed by the ad's ID.
     2026-01-05,1203,4
 
 The data is as fresh as the file: `as_of` is the file's modification time, so a forgotten export
-shows up as stale instead of silently looking current. Empty cells are skipped, not read as 0.
+shows up as stale instead of silently looking current. Daily empty cells are skipped; ad lead
+counts must be explicit. Dates must use YYYY-MM-DD; headers are unique and row widths must match.
 """
 
 from __future__ import annotations
@@ -41,14 +42,20 @@ class CsvSource:
             reader = csv.DictReader(f)
             if not reader.fieldnames or "date" not in reader.fieldnames:
                 raise ValueError("%s needs a 'date' column" % self.path.name)
+            headers = [name.strip() for name in reader.fieldnames]
+            if any(not name for name in headers) or len(headers) != len(set(headers)):
+                raise ValueError("CSV headers must be nonempty and unique")
             if self.kind == "ad_leads" and not {"ad_id", "leads"} <= set(reader.fieldnames):
                 raise ValueError("ad leads CSV needs date, ad_id and leads columns")
             metrics = [c for c in reader.fieldnames if c != "date"]
             for m in metrics if self.kind == "daily" else []:
                 data.daily.setdefault(m.strip(), {})
             for row in reader:
+                if None in row or any(value is None for value in row.values()):
+                    raise ValueError("CSV row must have exactly one cell per header")
                 day = (row.get("date") or "").strip()
-                dt.date.fromisoformat(day)  # rejects malformed dates loudly
+                if dt.date.fromisoformat(day).isoformat() != day:
+                    raise ValueError("CSV dates must use YYYY-MM-DD")
                 if not lo <= day <= hi:
                     continue
                 if self.kind == "ad_leads":

@@ -72,6 +72,7 @@ def test_malformed_response_preserves_cache(tmp_path):
     bodies = iter([json.dumps({"data": [{
         "id": "ch_1", "status": "succeeded", "paid": True, "captured": True,
         "created": ts(dt.date(2026, 1, 30)), "currency": "usd", "amount": 9000,
+        "amount_refunded": 0, "refunded": False,
     }], "has_more": False}).encode(), b"invalid json"])
     class FixedClockStripe(StripeSource):
         def fetch(self, since, until):
@@ -86,3 +87,42 @@ def test_malformed_response_preserves_cache(tmp_path):
     store, health, _ = controller.read_sources(cfg, now + dt.timedelta(minutes=15), {"pay": src})
     assert health[0]["status"] == "stale"
     assert store.total("cash", 7) == 90
+
+
+@pytest.mark.parametrize("refund,flag", [
+    (-1, False), (0.5, False), (True, False), (None, False), ("0", False), (4001, False),
+    (0, "false"), (0, 0), (0, None), (4000, False), (500, True), (0, True),
+])
+def test_invalid_refund_values_fail_the_read(refund, flag):
+    day = dt.date(2026, 1, 30)
+    charge = {"id": "ch_1", "status": "succeeded", "paid": True, "captured": True,
+              "created": ts(day), "currency": "usd", "amount": 4000, "amount_refunded": refund, "refunded": flag}
+    payload = json.dumps({"data": [charge], "has_more": False}).encode()
+    source = StripeSource(api_key="synthetic-key", transport=lambda *args: (200, payload))
+    with pytest.raises(RuntimeError, match="refund"):
+        source.fetch(day, day)
+
+
+@pytest.mark.parametrize("missing", ["amount_refunded", "refunded"])
+def test_missing_refund_fields_fail_the_read(missing):
+    day = dt.date(2026, 1, 30)
+    charge = {"id": "ch_1", "status": "succeeded", "paid": True, "captured": True,
+              "created": ts(day), "currency": "usd", "amount": 4000, "amount_refunded": 0, "refunded": False}
+    charge.pop(missing)
+    payload = json.dumps({"data": [charge], "has_more": False}).encode()
+    source = StripeSource(api_key="synthetic-key", transport=lambda *args: (200, payload))
+    with pytest.raises(RuntimeError, match="refund"):
+        source.fetch(day, day)
+
+
+@pytest.mark.parametrize("refund,flag,cash,sales", [(0, False, 40, 1), (1200, False, 28, 1), (4000, True, 0, 0)])
+def test_valid_refunds_preserve_cash_and_sale_counts(refund, flag, cash, sales):
+    day = dt.date(2026, 1, 30)
+    charge = {"id": "ch_1", "status": "succeeded", "paid": True, "captured": True,
+              "created": ts(day), "currency": "usd", "amount": 4000, "amount_refunded": refund, "refunded": flag}
+    payload = json.dumps({"data": [charge], "has_more": False}).encode()
+    source = StripeSource(api_key="synthetic-key", transport=lambda *args: (200, payload))
+    data = source.fetch(day, day)
+    assert data.daily["cash"][day.isoformat()] == cash
+    assert data.daily["refunds"][day.isoformat()] == refund / 100
+    assert data.daily["sales"].get(day.isoformat(), 0) == sales

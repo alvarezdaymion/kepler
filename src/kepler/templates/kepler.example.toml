@@ -86,6 +86,7 @@ site = "site"              # generated HTML
 
 # ---- Sources ----------------------------------------------------------------------------
 # Uncomment what you use. A source that isn't configured leaves its metrics "Not tracked".
+# CSVs require YYYY-MM-DD dates, unique nonblank headers and exactly one cell per header in each row.
 
 # [[sources]]
 # name = "meta"

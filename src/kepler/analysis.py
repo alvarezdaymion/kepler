@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -55,12 +57,14 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def maybe_run(cfg: Any, snap: dict[str, Any], now: dt.datetime, state_dir: Path,
-              client: Any = None) -> dict[str, Any]:
+              client: Any = None, decision_clock: Callable[[], dt.datetime] | None = None) -> dict[str, Any]:
+    started = time.monotonic()
+    clock = decision_clock or (lambda: now + dt.timedelta(seconds=time.monotonic() - started))
     with locked(state_dir / "analysis.lock"):
-        return _maybe_run(cfg, snap, now, state_dir, client)
+        return _maybe_run(cfg, snap, clock, state_dir, client)
 
 
-def _maybe_run(cfg: Any, snap: dict[str, Any], now: dt.datetime, state_dir: Path,
+def _maybe_run(cfg: Any, snap: dict[str, Any], clock: Callable[[], dt.datetime], state_dir: Path,
                client: Any) -> dict[str, Any]:
     a = cfg["analysis"]
     if not a["enabled"]:
@@ -70,6 +74,7 @@ def _maybe_run(cfg: Any, snap: dict[str, Any], now: dt.datetime, state_dir: Path
     try:
         prev = _load(path)
         last_try = prev.get("attempted_at") or prev.get("generated_at")
+        now = clock()
         if last_try and (now - dt.datetime.fromisoformat(last_try)).total_seconds() / 60 < every:
             return {**prev, "status": "error" if prev.get("error") else "ok"}
     except (OSError, ValueError, TypeError):
@@ -81,7 +86,7 @@ def _maybe_run(cfg: Any, snap: dict[str, Any], now: dt.datetime, state_dir: Path
             return {"status": "off", "reason": "Install the llm extra to use analysis: uv sync --extra llm"}
         client = anthropic.Anthropic(max_retries=0)
     record: dict[str, Any] = {k: prev[k] for k in ("text", "generated_at", "model", "usage") if k in prev}
-    record["attempted_at"] = now.isoformat(timespec="seconds")
+    record["attempted_at"] = clock().isoformat()
     record["error"] = "analysis attempt has no confirmed result"
     write_json(path, record)
     try:
@@ -98,7 +103,7 @@ def _maybe_run(cfg: Any, snap: dict[str, Any], now: dt.datetime, state_dir: Path
         if resp.stop_reason == "refusal":
             raise RuntimeError("the model declined this request")
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
-        record.update(text=text, generated_at=now.isoformat(timespec="seconds"), model=resp.model,
+        record.update(text=text, generated_at=clock().isoformat(timespec="seconds"), model=resp.model,
                       usage={"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens})
         record.pop("error", None)
         status = "ok"

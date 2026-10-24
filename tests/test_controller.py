@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -211,3 +212,81 @@ def test_overlapping_ticks_serialize_reads_and_writes(tmp_path):
             release.set()
         first.result(5)
         second.result(5)
+
+
+@pytest.mark.parametrize("record", ["20260130,1,9", "2026-01-30,1,0,9"])
+def test_malformed_crm_export_cannot_trigger_a_live_pause(tmp_path, record):
+    path = tmp_path / "leads.csv"
+    path.write_text("date,ad_id,leads\n%s\n" % record)
+    os.utime(path, (NOW.timestamp(), NOW.timestamp()))
+    c = config.from_dict({"auto_cut": {"mode": "live"}, "ads": {"leads_from": "ad_leads"}, "sources": [
+        {"name": "meta", "type": "meta"},
+        {"name": "crm", "type": "csv", "kind": "ad_leads", "path": "leads.csv"},
+    ]}, tmp_path)
+    source = Pausable(SourceData(NOW, ads=[
+        AdRow("2026-01-30", "1", status="ACTIVE", spend=80, impressions=4000, leads=9)
+    ]))
+    snap = controller.run_tick(c, NOW, built={"meta": source})
+    assert not source.paused
+    assert snap["sources"][1]["status"] == "missing"
+    assert snap["ads"]["rows"][0]["leads"] is None
+
+
+def test_source_health_and_cache_timestamp_use_read_completion(tmp_path, monkeypatch):
+    elapsed = 0
+    monkeypatch.setattr(controller.time, "monotonic", lambda: elapsed)
+
+    class Slow:
+        def fetch(self, since, until):
+            nonlocal elapsed
+            elapsed += 150
+            return SourceData(NOW + dt.timedelta(seconds=elapsed))
+
+    c = config.from_dict({"sources": [{"name": "crm", "type": "csv", "path": "unused.csv"}]}, tmp_path)
+    snap = controller.run_tick(c, NOW, built={"crm": Slow()})
+    assert snap["sources"][0]["status"] == "ok"
+    assert snap["sources"][0]["age_minutes"] == 0
+    completed = NOW + dt.timedelta(seconds=150)
+    cached = controller.read_json(c.state_dir / "sources" / "crm.json")
+    assert dt.datetime.fromisoformat(cached["fetched_at"]) == completed
+    assert dt.datetime.fromisoformat(snap["generated_at"]) == completed
+
+
+def test_slow_later_source_ages_earlier_inputs(tmp_path, monkeypatch):
+    elapsed = 0
+    monkeypatch.setattr(controller.time, "monotonic", lambda: elapsed)
+
+    class Slow:
+        def fetch(self, since, until):
+            nonlocal elapsed
+            elapsed += 31 * 60
+            return SourceData(NOW + dt.timedelta(seconds=elapsed))
+
+    c = config.from_dict({"sources": [
+        {"name": "first", "type": "csv", "path": "unused.csv", "max_age_minutes": 30},
+        {"name": "second", "type": "csv", "path": "unused.csv", "max_age_minutes": 30},
+    ]}, tmp_path)
+    store, health, _ = controller.read_sources(c, NOW, {"first": Fixed("first", SourceData(NOW)), "second": Slow()})
+    assert [row["status"] for row in health] == ["stale", "ok"]
+    assert store.stale_sources == {"first"}
+
+
+def test_slow_reads_do_not_shorten_model_request_cadence(tmp_path, monkeypatch):
+    elapsed = 0
+    monkeypatch.setattr(controller.time, "monotonic", lambda: elapsed)
+
+    class SlowOnce:
+        def fetch(self, since, until):
+            nonlocal elapsed
+            elapsed = 16 * 60
+            return SourceData(NOW + dt.timedelta(seconds=elapsed))
+
+    c = config.from_dict({"analysis": {"enabled": True, "every_minutes": 15},
+                          "sources": [{"name": "crm", "type": "csv", "path": "unused.csv"}]}, tmp_path)
+    client, source = FakeLLM(), SlowOnce()
+    controller.run_tick(c, NOW, built={"crm": source}, llm_client=client)
+    call_time = NOW + dt.timedelta(seconds=elapsed)
+    record = controller.read_json(c.state_dir / "analysis.json")
+    assert dt.datetime.fromisoformat(record["attempted_at"]) == call_time
+    controller.run_tick(c, call_time, built={"crm": source}, llm_client=client)
+    assert client.calls == 1

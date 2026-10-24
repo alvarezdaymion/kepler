@@ -31,6 +31,8 @@ Add a `[[sources]]` block per system (examples are commented at the bottom of `k
 
 A metric no source provides shows as "Not tracked". That is expected; do not fill it with zeros.
 
+CSV dates must use `YYYY-MM-DD`, with nonblank, unique headers and exactly one cell per header in every row. Compact dates, duplicate headers and extra or missing cells fail the export. Stripe reads also fail on missing or invalid refund fields: refund cents must be integers within the charge amount, and the boolean full-refund flag must agree.
+
 For CRM ad leads, set `leads_from = "ad_leads"`. A successful CSV with the required headers and no rows means zero leads. A failed export means unknown; it never falls back to platform leads. Ad lead counts must be explicit nonnegative whole numbers. Malformed responses, invalid caches and incomplete pagination cannot be used as healthy data.
 
 Done when `uv run --env-file .env kepler check` shows "env set" or "file found" for every source and `uv run --env-file .env kepler run` lists each source as `ok`. The CLI does not load `.env` itself. If a source is `missing` or `stale`, read its error in the output and fix it before moving on.
@@ -53,8 +55,8 @@ It only ever pauses ads. Do not change the rules in `src/kepler/ads.py` or the g
 
 Both dry-run and live hold cuts on stale or missing ad and selected CRM data and apply the same campaign and status preflight. Judgment covers exactly `judge_days` dates including today. Warning timers reset on disappearance, stale inputs, or observation gaps longer than twice the controller interval.
 
-Live attempts are durably journaled before writing in `state/auto-cut.jsonl`. Acknowledgment and verification are recorded separately; failed verification is an error. Previously attempted ads are never retried automatically. If an outcome is uncertain, inspect the provider and journal with the owner and handle further action manually. Preserve the journal; do not delete it to force a retry.
+Live attempts are durably journaled by ad ID before writing in `state/auto-cut.jsonl`. Acknowledgment and verification are recorded separately; failed verification is an error. Previously attempted ads are never retried automatically, including after renaming a source. If an outcome is uncertain, inspect the provider and journal with the owner and handle further action manually. Preserve the journal; do not delete it to force a retry.
 
 ## 6. Optional: the analysis panel
 
-If the owner wants a written read-out: `uv sync --extra llm`, put `ANTHROPIC_API_KEY` in `.env`, set `[analysis] enabled = true`, and run with `uv run --env-file .env kepler run`. It makes at most one model request attempt per `every_minutes` (once a day by default), including failures, refusals and interrupted attempts; SDK retries are disabled. Attempts are saved before calling. Tell them that is the only metered cost. The model only explains numbers Kepler computed.
+If the owner wants a written read-out: `uv sync --extra llm`, put `ANTHROPIC_API_KEY` in `.env`, set `[analysis] enabled = true`, and run with `uv run --env-file .env kepler run`. It makes at most one model request attempt per `every_minutes` (once a day by default), including failures, refusals and interrupted attempts; SDK retries are disabled. Attempts are saved before calling using the current time after reads and lock waits. Tell them that is the only metered cost. The model only explains numbers Kepler computed.

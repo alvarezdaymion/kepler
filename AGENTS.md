@@ -22,12 +22,14 @@ If you were asked to set Kepler up for someone, follow [SETUP.md](SETUP.md). The
 - `SourceData.ad_leads = None` means the source does not provide CRM ad leads; `[]` means a successful empty export. Never substitute platform leads for selected CRM leads.
 - **Stale is labelled.** A failed read keeps the last good copy and marks the source stale. A failing source, auto-cut or analysis never stops the tick.
 - Reject malformed responses, invalid numbers and unfinished pagination. Validate caches before using them; an unusable cache leaves the source missing.
+- CSV dates must be canonical `YYYY-MM-DD`; reject blank or duplicate headers and rows whose cell count differs from the headers. Validate Stripe refund amounts and flags before counting a charge.
 - **Read-only.** Connectors send GET requests. The single exception is `MetaSource.pause_ad`, whose `_post` refuses anything but `status=PAUSED` on one numeric ad ID. Do not add other writes.
 - **Auto-cut stays off by default** and only pauses. It must never turn an ad on, raise a budget or edit anything else. Every candidate passes `guard.check` first, in dry-run and live alike.
-- Both modes require healthy input provenance, freshness at decision time, and the same read-only status and campaign preflight. Live reserves each ad in a durable journal before writing, records acknowledgment and verification, and never automatically retries an attempted ad.
+- Both modes require healthy input provenance, freshness at decision time, and the same read-only status and campaign preflight. Live reserves each ad by immutable ad ID in a durable journal before writing, records acknowledgment and verification, and never automatically retries an attempted ad, even after a source is renamed.
 - Lock the state directory for the entire tick, including analysis and page writes. Keep the pause journal and analysis attempt state across runs.
 - **Key ads by ID, never by name.**
-- **No metered calls in the 15-minute loop** other than the analysis step. Durably reserve each attempt before calling; failures and interruptions consume the full `analysis.every_minutes` interval too. Disable SDK retries.
+- **No metered calls in the 15-minute loop** other than the analysis step. Durably reserve each attempt using the current clock after reads and lock waits; failures and interruptions consume the full `analysis.every_minutes` interval too. Disable SDK retries.
+- Assess source health after all reads using the current clock, and timestamp snapshots when they are built.
 - **Secrets** come from environment variables. Use `uv run --env-file .env kepler ...` for manual commands with credentials. Never commit `.env`, `kepler.toml`, `state/` or `site/`, and never put tokens in errors, logs or the page (`http.py` errors omit provider and transport text).
 - Money is currently USD only; reject unsupported business and Stripe source currencies.
 - Runtime code is standard library only; the Anthropic SDK is an optional extra.

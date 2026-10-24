@@ -72,6 +72,12 @@ class StripeSource:
                 not all(isinstance(c.get(k), int) and not isinstance(c[k], bool) and c[k] >= 0
                         for k in ("created", "amount")) or not isinstance(c.get("currency"), str):
             raise RuntimeError("Stripe returned invalid charge fields")
+        refund = c.get("amount_refunded")
+        if isinstance(refund, bool) or not isinstance(refund, int) or not 0 <= refund <= c["amount"] or \
+                not isinstance(c.get("refunded"), bool):
+            raise RuntimeError("Stripe returned invalid refund fields")
+        if c["refunded"] != (c["amount"] > 0 and refund == c["amount"]):
+            raise RuntimeError("Stripe returned inconsistent refund fields")
         if not c["paid"] or not c["captured"]:
             return
         if str(c.get("currency", "")).lower() != self.currency:
@@ -79,10 +85,10 @@ class StripeSource:
         day = dt.datetime.fromtimestamp(int(c["created"])).astimezone().date()
         if day > until:
             return
-        amount = int(c.get("amount") or 0) / 100
-        refunded = int(c.get("amount_refunded") or 0) / 100
+        amount = c["amount"] / 100
+        refunded = refund / 100
         d = day.isoformat()
         data.add("cash", d, round(amount - refunded, 2))
         data.add("refunds", d, refunded)
-        if amount >= self.min_sale and not c.get("refunded"):
+        if amount >= self.min_sale and not c["refunded"]:
             data.add("sales", d, 1)

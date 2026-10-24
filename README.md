@@ -34,7 +34,7 @@ To use your own data, run `uv run kepler init`, copy `.env.example` to `.env`, e
 `kepler run` is one controller tick. Schedule it every 15 minutes (launchd, cron and systemd examples are in [examples/scheduling](examples/scheduling)).
 
 1. Every configured source is read. Sources are read-only.
-2. A source that fails keeps its last good copy and is labelled **stale**. Malformed responses and unfinished pagination fail the read too. Data older than `max_age_minutes`, or dated more than a minute in the future, is stale. A source without a usable cache is **missing**, and its metrics are unknown. Successful empty reads provide real zeros.
+2. A source that fails keeps its last good copy and is labelled **stale**. Malformed responses and unfinished pagination fail the read too. Data older than `max_age_minutes`, or dated more than a minute in the future, is stale. Health is assessed using the current clock after all reads finish. A source without a usable cache is **missing**, and its metrics are unknown. Successful empty reads provide real zeros.
 3. Every number is computed in Python from that data.
 4. Auto-cut runs (off by default), then the optional analysis (at most once a day by default).
 5. `state/snapshot.json` and the HTML pages in `site/` are rewritten. `kepler serve` serves them on localhost.
@@ -53,6 +53,10 @@ An interprocess lock serializes ticks using the same state directory, including 
 | Demo | Synthetic | Everything above, for `kepler demo` |
 
 There are no built-in connectors for CRMs, Google Search Console or YouTube. Export a daily CSV from those tools (templates in [examples/csv](examples/csv)), or write a connector: a class with a `name` and `fetch(since, until)` that returns a `SourceData` (see `src/kepler/sources/base.py`).
+
+CSV dates must use `YYYY-MM-DD`. Headers must be nonblank and unique, including after trimming spaces, and every row must have exactly one cell per header. Invalid exports fail the read instead of silently dropping counts. Empty daily metric cells are skipped; CRM ad lead counts must be explicit.
+
+Stripe refund amounts must be nonnegative integer cents no greater than the charge amount. The `refunded` flag must be a boolean consistent with whether a positive charge was fully refunded. Missing or invalid refund fields fail the read.
 
 ## Ad rules and auto-cut
 
@@ -76,7 +80,7 @@ Auto-cut has three modes, set with `[auto_cut] mode`:
 
 It only ever pauses. It never turns an ad on, never changes a budget and never edits anything else, and the Meta connector refuses any other write before it is sent. Both checking modes hold when the snapshot is more than 20 minutes old, when any required ad or selected lead source is stale, missing or uncertain, when more than 3 ads would be paused in one run, or when `campaign_ids` excludes the ad. Freshness is checked again immediately before sending a live pause. Ad inputs must come exclusively from the configured auto-cut source.
 
-Every live attempt is durably reserved in `state/auto-cut.jsonl` before writing, followed by acknowledgment and a confirmed or uncertain outcome. Failed verification is reported as an error. Any previously attempted ad is held on later runs, even if the process stopped before recording its outcome. Inspect the journal and the provider directly and handle any further action manually; do not delete the journal to retry an uncertain pause.
+Every live attempt is durably reserved by ad ID in `state/auto-cut.jsonl` before writing, followed by acknowledgment and a confirmed or uncertain outcome. Failed verification is reported as an error. Any previously attempted ad is held on later runs, even if the process stopped before recording its outcome or the source was renamed. Inspect the journal and the provider directly and handle any further action manually; do not delete the journal to retry an uncertain pause.
 
 ### The bad-data guard
 
@@ -102,7 +106,7 @@ Everything lives in `kepler.toml` (start from `uv run kepler init`; defaults are
 
 ## Cost
 
-Reading Meta and Stripe is free, so the 15-minute loop costs nothing to run. The only metered call is the optional analysis panel: at most one model request attempt per `every_minutes` (1,440, once a day, by default), including refusals, failures and interrupted calls. Attempts are persisted before calling and SDK retries are disabled. With it off, the panel says so and everything else works.
+Reading Meta and Stripe is free, so the 15-minute loop costs nothing to run. The only metered call is the optional analysis panel: at most one model request attempt per `every_minutes` (1,440, once a day, by default), including refusals, failures and interrupted calls. The interval starts at the current request reservation time, after source reads and lock waits. Attempts are persisted before calling and SDK retries are disabled. With it off, the panel says so and everything else works.
 
 ## Development
 

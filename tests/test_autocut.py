@@ -231,3 +231,21 @@ def test_meta_acknowledgment_is_audited_when_verification_fails(tmp_path, readba
         "attempted", "acknowledged", "uncertain"]
     second = autocut.run(snapshot([row("1", 80, 4000)]), source, c, NOW, TODAY, log)
     assert second["held"] and posts == [b"status=PAUSED"]
+
+
+@pytest.mark.parametrize("phase", ["attempted", "uncertain", "confirmed"])
+def test_source_alias_changes_preserve_all_ad_reservations(tmp_path, phase):
+    c = cfg(tmp_path, "live", source="renamed")
+    log = c.state_dir / "auto-cut.jsonl"
+    log.parent.mkdir(parents=True)
+    original = {"ad_id": "1", "source": "original", "phase": phase}
+    log.write_text(json.dumps(original) + "\n")
+    snap = snapshot([row("1", 80, 4000), row("2", 80, 4000)])
+    snap["sources"][0]["name"] = "renamed"
+    for candidate in snap["ads"]["rows"]:
+        candidate["sources"] = ["renamed"]
+    source = FakeAds({"1": (80, 4000), "2": (80, 4000)})
+    result = autocut.run(snap, source, c, NOW, TODAY)
+    assert source.paused == ["2"]
+    assert [held["ad_id"] for held in result["held"]] == ["1"]
+    assert json.loads(log.read_text().splitlines()[0]) == original

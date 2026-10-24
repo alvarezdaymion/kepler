@@ -54,7 +54,7 @@ def _freshness_holds(snapshot: dict[str, Any], cfg: Any, now: dt.datetime) -> li
         return ["input freshness or provenance is missing or invalid"]
 
 
-def _attempted(path: Path, source: str) -> set[str]:
+def _attempted(path: Path) -> set[str]:
     try:
         lines = path.read_text().splitlines()
     except FileNotFoundError:
@@ -64,8 +64,7 @@ def _attempted(path: Path, source: str) -> set[str]:
         record = json.loads(line)
         if not isinstance(record, dict) or not isinstance(record.get("ad_id"), str):
             raise ValueError("invalid pause journal")
-        if record.get("source", source) == source:
-            attempted.add(record["ad_id"])
+        attempted.add(record["ad_id"])
     return attempted
 
 
@@ -99,7 +98,7 @@ def _run(snapshot: dict[str, Any], source: Any, cfg: Any, today: dt.date, path: 
         out["holds"].append("source %r cannot preflight, re-read and pause an ad" % ac["source"])
         return out
     try:
-        attempted = _attempted(path, ac["source"])
+        attempted = _attempted(path)
         since = dt.date.fromisoformat(snapshot["ads"]["since"])
         until = dt.date.fromisoformat(snapshot["ads"]["until"])
         if until != today or (until - since).days + 1 != int(cfg["ads"]["judge_days"]):
