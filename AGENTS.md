@@ -20,8 +20,10 @@ If you were asked to set Kepler up for someone, follow [SETUP.md](SETUP.md). The
 - **Math in code, judgment in the model.** Every number on the page is computed in Python. The analysis step receives computed numbers and must not be asked to calculate totals, rates or money.
 - **Unknown is not zero.** A metric no source provides is `None` and renders as "Not tracked". A source that read successfully and found nothing is a real 0.
 - `SourceData.ad_leads = None` means the source does not provide CRM ad leads; `[]` means a successful empty export. Never substitute platform leads for selected CRM leads.
+- When CRM leads are selected, every configured ad-lead export is required. A missing export makes the combined count unknown; missing or stale required inputs reset warning timers until all recover.
 - **Stale is labelled.** A failed read keeps the last good copy and marks the source stale. A failing source, auto-cut or analysis never stops the tick.
 - Reject malformed responses, invalid numbers and unfinished pagination. Validate caches before using them; an unusable cache leaves the source missing.
+- Validate the type and numeric value of every Meta action entry before counting leads, including entries for other action types. Incomplete entries fail the read.
 - CSV dates must be canonical `YYYY-MM-DD`; reject blank or duplicate headers and rows whose cell count differs from the headers. Validate Stripe refund amounts and flags before counting a charge.
 - **Read-only.** Connectors send GET requests. The single exception is `MetaSource.pause_ad`, whose `_post` refuses anything but `status=PAUSED` on one numeric ad ID. Do not add other writes.
 - **Auto-cut stays off by default** and only pauses. It must never turn an ad on, raise a budget or edit anything else. Every candidate passes `guard.check` first, in dry-run and live alike.

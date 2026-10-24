@@ -58,6 +58,8 @@ CSV dates must use `YYYY-MM-DD`. Headers must be nonblank and unique, including 
 
 Stripe refund amounts must be nonnegative integer cents no greater than the charge amount. The `refunded` flag must be a boolean consistent with whether a positive charge was fully refunded. Missing or invalid refund fields fail the read.
 
+Every Meta action entry must have a nonempty `action_type` and a finite, nonnegative numeric `value`, including actions not counted as leads. Selected lead counts must be whole numbers. Malformed entries fail the read and preserve the last good cache as stale.
+
 ## Ad rules and auto-cut
 
 T is your target cost per lead (`[ads] target_cpl`). Verdicts use exactly `judge_days` dates (30 by default), including today, for both aggregation and guard re-reads:
@@ -70,7 +72,7 @@ T is your target cost per lead (`[ads] target_cpl`). Verdicts use exactly `judge
 | Cost per lead over T, up to 2T | Warning. Becomes a cut once it has stayed in warning longer than `warning_max_hours` (72 by default). |
 | Cost per lead over 2T | Cut |
 
-Warning time must be continuously observed: disappearance, stale inputs, or a gap longer than twice `controller.every_minutes` resets it. With `leads_from = "ad_leads"`, a successful empty CRM export means zero leads; an unavailable export means "Not tracked" and holds cuts. Platform leads never replace the selected CRM counts.
+Warning time must be continuously observed: disappearance, stale inputs, or a gap longer than twice `controller.every_minutes` resets it. With `leads_from = "ad_leads"`, every configured CRM ad-lead export is required. A successful empty export means zero leads; any missing export makes the combined count "Not tracked" and resets warning time. The warning clock restarts only after all required exports are healthy. Platform leads never replace the selected CRM counts.
 
 Auto-cut has three modes, set with `[auto_cut] mode`:
 

@@ -64,7 +64,8 @@ cut_multiple = 2           # over 2T per lead is a cut
 warning_max_hours = 72     # requires continuous healthy observations; gaps over two ticks reset it
 judge_days = 30            # exactly this many dates including today, also used for guard re-reads
 leads_from = "ads"         # "ads" = the ad platform's lead count; "ad_leads" = a CRM CSV keyed by ad ID
-# Missing CRM data holds cuts; a successful empty export means zero. No platform fallback.
+# All configured CRM ad-lead exports are required; missing exports reset warnings and hold cuts.
+# Successful empty exports mean zero. No platform fallback.
 
 [auto_cut]
 mode = "off"               # off | dry-run | live. Run dry-run for a while and read the Ad health page first.

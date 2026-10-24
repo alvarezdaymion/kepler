@@ -84,7 +84,8 @@ def build(store: Any, cfg: Any, state: dict[str, Any], now: dt.datetime) -> dict
     since = (store.today - dt.timedelta(days=int(a["judge_days"]) - 1)).isoformat()
     until = store.today.isoformat()
     use_crm = a.get("leads_from") == "ad_leads"
-    leads_available = not use_crm or store.has_ad_leads
+    required_crm = {s["name"] for s in cfg["sources"] if s.get("kind") == "ad_leads"}
+    leads_available = not use_crm or (store.has_ad_leads and required_crm <= store.ad_lead_sources)
     totals = aggregate(store.ads, since, store.ad_leads if use_crm else None, until)
     warn_since: dict[str, str] = state.setdefault("warning_since", {})
     warn_seen: dict[str, str] = state.setdefault("warning_seen", {})
@@ -98,7 +99,7 @@ def build(store: Any, cfg: Any, state: dict[str, Any], now: dt.datetime) -> dict
                                float(a["cut_multiple"]))
         if not leads_available:
             t["leads"] = None
-            level, reason = "not_tracked", "Selected CRM lead source is unavailable"
+            level, reason = "not_tracked", "A required CRM lead source is unavailable"
         hours_in_warning = None
         inputs = store.ad_providers.get(ad_id, set()) | (store.ad_lead_sources if use_crm else set())
         healthy = not inputs.intersection(store.stale_sources)

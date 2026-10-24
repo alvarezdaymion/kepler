@@ -76,8 +76,15 @@ class MetaSource:
             return 0
         if not isinstance(actions, list) or any(not isinstance(a, dict) for a in actions):
             raise ValueError("invalid Meta actions")
-        return int(sum(_numeric(a.get("value"), whole=True) for a in actions
-                       if a.get("action_type") in self.lead_types))
+        leads = 0
+        for action in actions:
+            kind = action.get("action_type")
+            if not isinstance(kind, str) or not kind or kind != kind.strip():
+                raise ValueError("invalid Meta action type")
+            value = _numeric(action.get("value"), whole=kind in self.lead_types)
+            if kind in self.lead_types:
+                leads += int(value)
+        return leads
 
     def fetch(self, since: dt.date, until: dt.date) -> SourceData:
         rng = json.dumps({"since": since.isoformat(), "until": until.isoformat()})

@@ -33,7 +33,9 @@ A metric no source provides shows as "Not tracked". That is expected; do not fil
 
 CSV dates must use `YYYY-MM-DD`, with nonblank, unique headers and exactly one cell per header in every row. Compact dates, duplicate headers and extra or missing cells fail the export. Stripe reads also fail on missing or invalid refund fields: refund cents must be integers within the charge amount, and the boolean full-refund flag must agree.
 
-For CRM ad leads, set `leads_from = "ad_leads"`. A successful CSV with the required headers and no rows means zero leads. A failed export means unknown; it never falls back to platform leads. Ad lead counts must be explicit nonnegative whole numbers. Malformed responses, invalid caches and incomplete pagination cannot be used as healthy data.
+Meta action entries must include a valid `action_type` and a finite, nonnegative numeric `value`, even for actions not counted as leads. An incomplete entry fails the read; a usable last copy remains stale.
+
+For CRM ad leads, set `leads_from = "ad_leads"`. A successful CSV with the required headers and no rows means zero leads. Every configured ad-lead export is required: if any is missing, the combined count is unknown and warning timers reset. Recovery starts a new warning period once all required inputs are healthy. It never falls back to platform leads. Ad lead counts must be explicit nonnegative whole numbers. Malformed responses, invalid caches and incomplete pagination cannot be used as healthy data.
 
 Done when `uv run --env-file .env kepler check` shows "env set" or "file found" for every source and `uv run --env-file .env kepler run` lists each source as `ok`. The CLI does not load `.env` itself. If a source is `missing` or `stale`, read its error in the output and fix it before moving on.
 

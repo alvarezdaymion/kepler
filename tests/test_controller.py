@@ -290,3 +290,29 @@ def test_slow_reads_do_not_shorten_model_request_cadence(tmp_path, monkeypatch):
     assert dt.datetime.fromisoformat(record["attempted_at"]) == call_time
     controller.run_tick(c, call_time, built={"crm": source}, llm_client=client)
     assert client.calls == 1
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_crm_recovery_requires_new_warning_time_before_live_pause(tmp_path, monkeypatch, cached):
+    monkeypatch.setattr(controller.time, "monotonic", lambda: 0.0)
+    c = config.from_dict({"ads": {"leads_from": "ad_leads", "warning_max_hours": 0.25},
+                          "auto_cut": {"mode": "live"}, "sources": [
+        {"name": "meta", "type": "meta"},
+        {"name": "crm_a", "type": "csv", "kind": "ad_leads", "path": "a.csv"},
+        {"name": "crm_b", "type": "csv", "kind": "ad_leads", "path": "b.csv"},
+    ]}, tmp_path)
+    source = Pausable()
+    for minutes in (0, 15, 30, 45, 60):
+        at = NOW + dt.timedelta(minutes=minutes)
+        source.data = SourceData(at, ads=[
+            AdRow("2026-01-30", "1", status="ACTIVE", spend=80, impressions=4000)
+        ])
+        crm_a = Fixed("crm_a", SourceData(at, ad_leads=[("2026-01-30", "1", 2)]))
+        crm_b = Fixed("crm_b", SourceData(at, ad_leads=[]),
+                      error="unavailable" if minutes < 30 and not (cached and minutes == 0) else None)
+        snap = controller.run_tick(c, at, built={"meta": source, "crm_a": crm_a, "crm_b": crm_b})
+        if minutes < 60:
+            assert not source.paused, snap["auto_cut"]
+        if minutes == 30:
+            assert snap["ads"]["rows"][0]["hours_in_warning"] == 0
+    assert source.paused == ["1"]

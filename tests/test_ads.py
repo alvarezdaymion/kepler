@@ -1,5 +1,7 @@
 import datetime as dt
 
+import pytest
+
 from kepler import ads, config
 from kepler.metrics import MetricStore
 from kepler.sources.base import AdRow, SourceData
@@ -109,3 +111,49 @@ def test_warning_restarts_after_disappearance_or_unobserved_gap(tmp_path):
         result = ads.build(store, cfg, state, now + dt.timedelta(hours=80))
         assert result["rows"][0]["verdict"] == "warning"
         assert result["rows"][0]["hours_in_warning"] == 0
+
+
+@pytest.mark.parametrize("unavailable", ["missing", "stale", "undeclared"])
+def test_warning_resets_until_every_configured_crm_export_recovers(tmp_path, unavailable):
+    now = dt.datetime(2026, 1, 31, 12, tzinfo=dt.UTC)
+    cfg = config.from_dict({"ads": {"leads_from": "ad_leads", "warning_max_hours": 0.25}, "sources": [
+        {"name": "meta", "type": "meta"},
+        {"name": "crm_a", "type": "csv", "kind": "ad_leads", "path": "a.csv"},
+        {"name": "crm_b", "type": "csv", "kind": "ad_leads", "path": "b.csv"},
+    ]}, tmp_path)
+
+    def build(at, problem=None):
+        store = MetricStore(at.date())
+        store.add_source("meta", SourceData(at, ads=[
+            AdRow("2026-01-31", "1", status="ACTIVE", spend=120, impressions=6000)
+        ]), False)
+        store.add_source("crm_a", SourceData(at, ad_leads=[("2026-01-31", "1", 3)]), False)
+        if problem != "missing":
+            store.add_source("crm_b", SourceData(at, ad_leads=None if problem == "undeclared" else []),
+                             problem == "stale")
+        return ads.build(store, cfg, state, at)["rows"][0]
+
+    state = {}
+    assert build(now)["hours_in_warning"] == 0
+    interrupted = build(now + dt.timedelta(minutes=15), unavailable)
+    assert interrupted["hours_in_warning"] is None
+    assert not state["warning_since"] and not state["warning_seen"]
+    recovered = build(now + dt.timedelta(minutes=30))
+    assert recovered["verdict"] == "warning" and recovered["hours_in_warning"] == 0
+    assert build(now + dt.timedelta(minutes=45))["verdict"] == "warning"
+    assert build(now + dt.timedelta(minutes=60))["verdict"] == "cut"
+
+
+def test_unselected_crm_export_does_not_interrupt_platform_warning(tmp_path):
+    now = dt.datetime(2026, 1, 31, 12, tzinfo=dt.UTC)
+    cfg = config.from_dict({"ads": {"warning_max_hours": 0.25}, "sources": [
+        {"name": "crm", "type": "csv", "kind": "ad_leads", "path": "unused.csv"},
+    ]}, tmp_path)
+    store = MetricStore(now.date())
+    store.add_source("meta", SourceData(now, ads=[
+        AdRow("2026-01-31", "1", status="ACTIVE", spend=120, impressions=6000, leads=3)
+    ]), False)
+    state = {}
+    for minutes in (0, 15):
+        assert ads.build(store, cfg, state, now + dt.timedelta(minutes=minutes))["rows"][0]["verdict"] == "warning"
+    assert ads.build(store, cfg, state, now + dt.timedelta(minutes=30))["rows"][0]["verdict"] == "cut"

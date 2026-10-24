@@ -186,3 +186,69 @@ def test_dry_run_holds_excluded_campaign(tmp_path):
     result = autocut.run(snapshot([row("11", 80, 4000)]), src, cfg, NOW, TODAY)
     assert result["held"] and not result["would_pause"]
     assert all(call[0] == "GET" for call in fake.calls)
+
+
+def action_routes(actions):
+    return {
+        ("GET", "/v23.0/act_42/insights"): {"data": [{
+            "date_start": "2026-01-30", "ad_id": "11", "spend": "90", "impressions": "4000", "actions": actions,
+        }]},
+        ("GET", "/v23.0/act_42/ads"): {"data": [{"id": "11", "status": "ACTIVE"}]},
+    }
+
+
+@pytest.mark.parametrize("action", [
+    {"value": "7"}, {"action_type": None, "value": "7"}, {"action_type": 17, "value": "7"},
+    {"action_type": "", "value": "7"}, {"action_type": " lead ", "value": "7"},
+    {"action_type": "link_click"}, {"action_type": "link_click", "value": True},
+    {"action_type": "link_click", "value": "NaN"}, {"action_type": "link_click", "value": "-1"},
+])
+def test_incomplete_or_invalid_actions_fail_the_read(action):
+    source, fake = make(action_routes([action]))
+    with pytest.raises(ValueError):
+        source.fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+    assert all(method == "GET" for method, _, _ in fake.calls)
+
+
+@pytest.mark.parametrize("actions,leads", [
+    ([], 0), (None, 0), ([{"action_type": "link_click", "value": "1.5"}], 0),
+    ([{"action_type": "lead", "value": "3"},
+      {"action_type": "offsite_conversion.fb_pixel_lead", "value": "2"}], 5),
+])
+def test_valid_actions_count_only_selected_lead_types(actions, leads):
+    source, _ = make(action_routes(actions))
+    data = source.fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+    assert data.ads[0].leads == leads
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_malformed_actions_never_pause_and_preserve_good_cache(tmp_path, cached):
+    from kepler import config, controller
+
+    now = dt.datetime(2026, 1, 31, 12, tzinfo=dt.UTC)
+    actions = [{"action_type": "lead", "value": "6"}]
+    routes = action_routes(actions)
+    routes.update({("GET", "/v23.0/11"): {"status": "ACTIVE"},
+                   ("GET", "/v23.0/11/insights"): {"data": [{"spend": "90", "impressions": "4000"}]},
+                   ("POST", "/v23.0/11"): {"success": True}})
+    fake = FakeGraph(routes)
+
+    class FixedClockMeta(MetaSource):
+        def fetch(self, since, until):
+            data = super().fetch(since, until)
+            data.as_of = now
+            return data
+
+    source = FixedClockMeta(token=TOKEN, account_id="42", transport=fake)
+    cfg = config.from_dict({"sources": [{"name": "meta", "type": "meta"}]}, tmp_path)
+    if cached:
+        controller.run_tick(cfg, now, built={"meta": source})
+    actions[:] = [{"value": "6"}]
+    cfg.data["auto_cut"]["mode"] = "live"
+    result = controller.run_tick(cfg, now, built={"meta": source})
+    assert all(method == "GET" for method, _, _ in fake.calls)
+    assert result["sources"][0]["status"] == ("stale" if cached else "missing")
+    if cached:
+        assert result["ads"]["rows"][0]["leads"] == 6
+        saved = controller.read_json(cfg.state_dir / "sources" / "meta.json")
+        assert saved["data"]["daily"]["meta_leads"] == {"2026-01-30": 6}
