@@ -6,15 +6,19 @@ Credentials come from the environment (ANTHROPIC_API_KEY) as the Anthropic SDK r
 
 Cost: this is the only metered call Kepler makes. It runs at most once per `every_minutes`
 (default 1440, once a day) no matter how often the controller ticks; in between, the last
-analysis is shown. After a failure it retries after min(every_minutes, 60) minutes.
+analysis is shown. Failed or interrupted attempts also consume the full interval.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from .state import locked, write_json
 
 SYSTEM = (
     "You write the analysis panel of a small business's revenue dashboard. Every number you need was "
@@ -44,34 +48,47 @@ def facts(snap: dict[str, Any]) -> dict[str, Any]:
 
 def _load(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
         return {}
+    if not isinstance(data, dict):
+        raise ValueError("invalid analysis state")
+    return data
 
 
 def maybe_run(cfg: Any, snap: dict[str, Any], now: dt.datetime, state_dir: Path,
-              client: Any = None) -> dict[str, Any]:
+              client: Any = None, decision_clock: Callable[[], dt.datetime] | None = None) -> dict[str, Any]:
+    started = time.monotonic()
+    clock = decision_clock or (lambda: now + dt.timedelta(seconds=time.monotonic() - started))
+    with locked(state_dir / "analysis.lock"):
+        return _maybe_run(cfg, snap, clock, state_dir, client)
+
+
+def _maybe_run(cfg: Any, snap: dict[str, Any], clock: Callable[[], dt.datetime], state_dir: Path,
+               client: Any) -> dict[str, Any]:
     a = cfg["analysis"]
     if not a["enabled"]:
         return {"status": "off", "reason": "Analysis is off. Set [analysis] enabled = true to turn it on."}
     path = state_dir / "analysis.json"
-    prev = _load(path)
     every = float(a["every_minutes"])
-    last_ok = prev.get("generated_at")
-    last_try = prev.get("attempted_at")
-    if last_ok and (now - dt.datetime.fromisoformat(last_ok)).total_seconds() / 60 < every:
-        return {**prev, "status": "ok"}
-    if last_try and prev.get("error") and \
-            (now - dt.datetime.fromisoformat(last_try)).total_seconds() / 60 < min(every, 60):
-        return {**prev, "status": "error"}
+    try:
+        prev = _load(path)
+        last_try = prev.get("attempted_at") or prev.get("generated_at")
+        now = clock()
+        if last_try and (now - dt.datetime.fromisoformat(last_try)).total_seconds() / 60 < every:
+            return {**prev, "status": "error" if prev.get("error") else "ok"}
+    except (OSError, ValueError, TypeError):
+        return {"status": "error", "error": "analysis state is unusable; manual inspection required"}
     if client is None:
         try:
             import anthropic
         except ImportError:
             return {"status": "off", "reason": "Install the llm extra to use analysis: uv sync --extra llm"}
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(max_retries=0)
     record: dict[str, Any] = {k: prev[k] for k in ("text", "generated_at", "model", "usage") if k in prev}
-    record["attempted_at"] = now.isoformat(timespec="seconds")
+    record["attempted_at"] = clock().isoformat()
+    record["error"] = "analysis attempt has no confirmed result"
+    write_json(path, record)
     try:
         kwargs: dict[str, Any] = {
             "model": a["model"], "max_tokens": int(a["max_tokens"]), "system": SYSTEM,
@@ -86,13 +103,12 @@ def maybe_run(cfg: Any, snap: dict[str, Any], now: dt.datetime, state_dir: Path,
         if resp.stop_reason == "refusal":
             raise RuntimeError("the model declined this request")
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
-        record.update(text=text, generated_at=now.isoformat(timespec="seconds"), model=resp.model,
+        record.update(text=text, generated_at=clock().isoformat(timespec="seconds"), model=resp.model,
                       usage={"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens})
         record.pop("error", None)
         status = "ok"
-    except Exception as e:
-        record["error"] = str(e)[:300]
+    except Exception:
+        record["error"] = "analysis request failed or was declined"
         status = "error"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, indent=2))
+    write_json(path, record)
     return {**record, "status": status}

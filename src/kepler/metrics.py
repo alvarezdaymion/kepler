@@ -21,6 +21,8 @@ class MetricStore:
     ads: list[AdRow] = field(default_factory=list)
     ad_leads: list[tuple[str, str, int]] = field(default_factory=list)
     has_ad_leads: bool = False
+    ad_providers: dict[str, set[str]] = field(default_factory=dict)
+    ad_lead_sources: set[str] = field(default_factory=set)
     conflicts: list[str] = field(default_factory=list)
 
     def add_source(self, name: str, data: SourceData, stale: bool) -> None:
@@ -34,8 +36,11 @@ class MetricStore:
             self.provider[metric] = name
             self.series[metric] = dict(s)
         self.ads.extend(data.ads)
-        if data.ad_leads:
+        for row in data.ads:
+            self.ad_providers.setdefault(row.ad_id, set()).add(name)
+        if data.ad_leads is not None:
             self.has_ad_leads = True
+            self.ad_lead_sources.add(name)
             self.ad_leads.extend(data.ad_leads)
 
     def tracked(self, metric: str) -> bool:

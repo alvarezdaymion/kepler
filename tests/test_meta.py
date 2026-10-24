@@ -119,3 +119,136 @@ def test_missing_credentials_fail_clearly(monkeypatch):
     monkeypatch.delenv("META_AD_ACCOUNT_ID", raising=False)
     with pytest.raises(RuntimeError, match="META_ACCESS_TOKEN"):
         MetaSource()
+
+
+def test_preflight_checks_status_and_campaign_without_writing():
+    src, fake = make({("GET", "/v23.0/11"): {"status": "ACTIVE", "campaign_id": "8"}}, campaign_ids=["7"])
+    with pytest.raises(RuntimeError, match="outside"):
+        src.preflight_ad("11")
+    assert all(call[0] == "GET" for call in fake.calls)
+
+
+def test_pause_reports_acknowledgment_before_failed_verification():
+    acknowledged = []
+    states = iter([{"status": "ACTIVE", "campaign_id": "7"}, {"status": "ACTIVE", "campaign_id": "7"}])
+    src, _ = make({("GET", "/v23.0/11"): lambda u, b: next(states),
+                   ("POST", "/v23.0/11"): {"success": True}})
+    with pytest.raises(RuntimeError, match="verif"):
+        src.pause_ad("11", on_ack=lambda: acknowledged.append(True))
+    assert acknowledged == [True]
+
+
+def test_empty_success_tracks_all_provided_metrics():
+    from kepler.metrics import MetricStore
+
+    src, _ = make({("GET", "/v23.0/act_42/insights"): {"data": []},
+                   ("GET", "/v23.0/act_42/ads"): {"data": []}})
+    store = MetricStore(dt.date(2026, 1, 31))
+    store.add_source("meta", src.fetch(dt.date(2026, 1, 1), store.today), False)
+    for metric in ("spend", "impressions", "clicks", "meta_leads"):
+        assert store.total(metric, 30) == 0
+
+
+@pytest.mark.parametrize("body", [{}, {"data": None}, {"data": {}}, {"data": [None]},
+                                       {"data": [], "paging": "invalid"}])
+def test_invalid_page_schema_fails(body):
+    src, _ = make({("GET", "/v23.0/act_42/insights"): body,
+                   ("GET", "/v23.0/act_42/ads"): {"data": []}})
+    with pytest.raises(RuntimeError):
+        src.fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+
+
+def test_remaining_page_at_limit_fails_without_extra_request(monkeypatch):
+    from kepler.sources import meta
+
+    monkeypatch.setattr(meta, "MAX_PAGES", 1)
+    src, fake = make(insights_routes())
+    with pytest.raises(RuntimeError, match="incomplete"):
+        src.fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize("values", [{"spend": "80"}, {"spend": "80", "impressions": None},
+                                         {"spend": "NaN", "impressions": "4000"}])
+def test_reread_rejects_missing_or_invalid_numbers(values):
+    src, _ = make({("GET", "/v23.0/11/insights"): {"data": [values]}})
+    with pytest.raises((RuntimeError, ValueError)):
+        src.reread_ad("11", dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+
+
+def test_dry_run_holds_excluded_campaign(tmp_path):
+    from test_autocut import NOW, TODAY, row, snapshot
+
+    from kepler import autocut, config
+
+    src, fake = make({("GET", "/v23.0/11"): {"status": "ACTIVE", "campaign_id": "8"}}, campaign_ids=["7"])
+    cfg = config.from_dict({"auto_cut": {"mode": "dry-run"}}, tmp_path)
+    result = autocut.run(snapshot([row("11", 80, 4000)]), src, cfg, NOW, TODAY)
+    assert result["held"] and not result["would_pause"]
+    assert all(call[0] == "GET" for call in fake.calls)
+
+
+def action_routes(actions):
+    return {
+        ("GET", "/v23.0/act_42/insights"): {"data": [{
+            "date_start": "2026-01-30", "ad_id": "11", "spend": "90", "impressions": "4000", "actions": actions,
+        }]},
+        ("GET", "/v23.0/act_42/ads"): {"data": [{"id": "11", "status": "ACTIVE"}]},
+    }
+
+
+@pytest.mark.parametrize("action", [
+    {"value": "7"}, {"action_type": None, "value": "7"}, {"action_type": 17, "value": "7"},
+    {"action_type": "", "value": "7"}, {"action_type": " lead ", "value": "7"},
+    {"action_type": "link_click"}, {"action_type": "link_click", "value": True},
+    {"action_type": "link_click", "value": "NaN"}, {"action_type": "link_click", "value": "-1"},
+])
+def test_incomplete_or_invalid_actions_fail_the_read(action):
+    source, fake = make(action_routes([action]))
+    with pytest.raises(ValueError):
+        source.fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+    assert all(method == "GET" for method, _, _ in fake.calls)
+
+
+@pytest.mark.parametrize("actions,leads", [
+    ([], 0), (None, 0), ([{"action_type": "link_click", "value": "1.5"}], 0),
+    ([{"action_type": "lead", "value": "3"},
+      {"action_type": "offsite_conversion.fb_pixel_lead", "value": "2"}], 5),
+])
+def test_valid_actions_count_only_selected_lead_types(actions, leads):
+    source, _ = make(action_routes(actions))
+    data = source.fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+    assert data.ads[0].leads == leads
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_malformed_actions_never_pause_and_preserve_good_cache(tmp_path, cached):
+    from kepler import config, controller
+
+    now = dt.datetime(2026, 1, 31, 12, tzinfo=dt.UTC)
+    actions = [{"action_type": "lead", "value": "6"}]
+    routes = action_routes(actions)
+    routes.update({("GET", "/v23.0/11"): {"status": "ACTIVE"},
+                   ("GET", "/v23.0/11/insights"): {"data": [{"spend": "90", "impressions": "4000"}]},
+                   ("POST", "/v23.0/11"): {"success": True}})
+    fake = FakeGraph(routes)
+
+    class FixedClockMeta(MetaSource):
+        def fetch(self, since, until):
+            data = super().fetch(since, until)
+            data.as_of = now
+            return data
+
+    source = FixedClockMeta(token=TOKEN, account_id="42", transport=fake)
+    cfg = config.from_dict({"sources": [{"name": "meta", "type": "meta"}]}, tmp_path)
+    if cached:
+        controller.run_tick(cfg, now, built={"meta": source})
+    actions[:] = [{"value": "6"}]
+    cfg.data["auto_cut"]["mode"] = "live"
+    result = controller.run_tick(cfg, now, built={"meta": source})
+    assert all(method == "GET" for method, _, _ in fake.calls)
+    assert result["sources"][0]["status"] == ("stale" if cached else "missing")
+    if cached:
+        assert result["ads"]["rows"][0]["leads"] == 6
+        saved = controller.read_json(cfg.state_dir / "sources" / "meta.json")
+        assert saved["data"]["daily"]["meta_leads"] == {"2026-01-30": 6}

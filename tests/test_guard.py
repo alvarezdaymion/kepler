@@ -1,3 +1,5 @@
+import pytest
+
 from kepler import guard
 
 
@@ -28,3 +30,13 @@ def test_spend_without_impressions_is_held():
 
 def test_impossible_fresh_read_is_held():
     assert guard.check(3.0, 100, 3.0, 2)
+
+
+@pytest.mark.parametrize("values", [
+    (60, 3000, 60, 0), (0.01, 0, 0.01, 0),
+    (float("nan"), 3000, 60, 3000), (60, 3000, float("inf"), 3000),
+    (60, -1, 60, 3000), (60, 3000, -1, 3000), (60, 3000, 60, None),
+    (60, 3000, 60, 3.5),
+])
+def test_invalid_numbers_hold_both_reads(values):
+    assert guard.check(*values)

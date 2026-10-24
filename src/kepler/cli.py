@@ -75,8 +75,10 @@ def summary(snap: dict[str, Any]) -> str:
         out.append("  guard held %s (ID %s): %s" % (h["ad_name"], h["ad_id"], "; ".join(h["reasons"])))
     for h in ac.get("holds", []):
         out.append("  held: %s" % h)
+    for e in ac.get("errors", []):
+        out.append("  ERROR (ID %s): %s" % (e.get("ad_id"), e.get("error")))
     if ac.get("mode") != "off" and not (ac.get("would_pause") or ac.get("paused") or ac.get("held")
-                                        or ac.get("holds")):
+                                        or ac.get("holds") or ac.get("errors")):
         out.append("  nothing to cut")
     a = snap.get("analysis") or {}
     out.append("Analysis: %s" % (a.get("reason") or a.get("status")))

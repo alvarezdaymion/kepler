@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +23,7 @@ from .metrics import MetricStore
 from .sources import apply_rename, build_one
 from .sources.base import SourceData
 from .sources.demo import DemoWorld
-
-
-def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, default=str))
-    os.replace(tmp, path)
+from .state import locked, write_json
 
 
 def read_json(path: Path) -> Any:
@@ -44,11 +39,16 @@ def lookback_days(cfg: Any) -> int:
 
 
 def read_sources(cfg: Any, now: dt.datetime, built: dict[str, Any] | None = None,
-                 demo_world: DemoWorld | None = None) -> tuple[MetricStore, list[dict[str, Any]], dict[str, Any]]:
+                 demo_world: DemoWorld | None = None,
+                 decision_clock: Callable[[], dt.datetime] | None = None
+                 ) -> tuple[MetricStore, list[dict[str, Any]], dict[str, Any]]:
+    started = time.monotonic()
+    clock = decision_clock or (lambda: now + dt.timedelta(seconds=time.monotonic() - started))
     today = now.date()
     since = today - dt.timedelta(days=lookback_days(cfg))
     store = MetricStore(today)
     health, objs = [], {}
+    available = []
     cache_dir = cfg.state_dir / "sources"
     for spec in cfg["sources"]:
         name = spec["name"]
@@ -58,24 +58,31 @@ def read_sources(cfg: Any, now: dt.datetime, built: dict[str, Any] | None = None
             obj = (built or {}).get(name) or build_one(spec, cfg.root, demo_world)
             objs[name] = obj
             data = apply_rename(obj.fetch(since, today), spec.get("rename", {}))
-            write_json(cache, {"fetched_at": now.isoformat(timespec="seconds"), "data": data.to_json()})
+            data.validate()
+            write_json(cache, {"fetched_at": clock().isoformat(timespec="seconds"), "data": data.to_json()})
         except Exception as e:
+            data = None
             error = "%s: %s" % (type(e).__name__, str(e)[:240])
             cached = read_json(cache)
             if cached:
-                data = SourceData.from_json(cached["data"])
+                try:
+                    data = SourceData.from_json(cached["data"])
+                except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+                    error += "; cached data is unusable"
         row: dict[str, Any] = {"name": name, "type": spec.get("type"), "error": error,
                                "max_age_minutes": spec.get("max_age_minutes", 60)}
+        health.append(row)
         if data is None:
             row.update(status="missing", as_of=None, age_minutes=None, metrics=[])
-            health.append(row)
             continue
-        age = max(0.0, (now - data.as_of).total_seconds() / 60)
-        stale = error is not None or age > float(row["max_age_minutes"])
+        available.append((name, data, row))
+    checked_at = clock()
+    for name, data, row in available:
+        age = (checked_at - data.as_of).total_seconds() / 60
+        stale = row["error"] is not None or age < -1 or age > float(row["max_age_minutes"])
         row.update(status="stale" if stale else "ok", as_of=data.as_of.isoformat(timespec="seconds"),
                    age_minutes=round(age, 1), metrics=sorted(data.daily), ad_rows=len(data.ads))
         store.add_source(name, data, stale)
-        health.append(row)
     return store, health, objs
 
 
@@ -99,21 +106,35 @@ def build_snapshot(cfg: Any, store: MetricStore, health: list[dict[str, Any]], n
 
 def run_tick(cfg: Any, now: dt.datetime | None = None, built: dict[str, Any] | None = None,
              demo_world: DemoWorld | None = None, llm_client: Any = None) -> dict[str, Any]:
+    with locked(cfg.state_dir / "tick.lock"):
+        return _run_tick(cfg, now, built, demo_world, llm_client)
+
+
+def _run_tick(cfg: Any, now: dt.datetime | None, built: dict[str, Any] | None,
+              demo_world: DemoWorld | None, llm_client: Any) -> dict[str, Any]:
     now = now or dt.datetime.now().astimezone()
+    started = time.monotonic()
+
+    def decision_clock() -> dt.datetime:
+        return now + dt.timedelta(seconds=time.monotonic() - started)
+
     state = cfg.state_dir
     state.mkdir(parents=True, exist_ok=True)
-    store, health, objs = read_sources(cfg, now, built, demo_world)
-    ad_state = read_json(state / "ad-state.json") or {}
-    snap = build_snapshot(cfg, store, health, now, ad_state)
+    store, health, objs = read_sources(cfg, now, built, demo_world, decision_clock=decision_clock)
+    ad_state = read_json(state / "ad-state.json")
+    if not isinstance(ad_state, dict) or any(not isinstance(v, dict) for v in ad_state.values()):
+        ad_state = {}
+    snap = build_snapshot(cfg, store, health, decision_clock(), ad_state)
     write_json(state / "ad-state.json", ad_state)
     try:
-        snap["auto_cut"] = autocut.run(snap, objs.get(cfg["auto_cut"]["source"]), cfg, now, store.today,
-                                       state / "auto-cut.jsonl")
+        snap["auto_cut"] = autocut.run(snap, objs.get(cfg["auto_cut"]["source"]), cfg, decision_clock(), store.today,
+                                       state / "auto-cut.jsonl", decision_clock=decision_clock)
     except Exception as e:
         snap["auto_cut"] = {"mode": cfg["auto_cut"]["mode"], "errors": [{"error": str(e)[:300]}],
                             "paused": [], "would_pause": [], "held": [], "holds": [], "candidates": []}
     try:
-        snap["analysis"] = analysis.maybe_run(cfg, snap, now, state, llm_client)
+        snap["analysis"] = analysis.maybe_run(cfg, snap, decision_clock(), state, llm_client,
+                                              decision_clock=decision_clock)
     except Exception as e:
         snap["analysis"] = {"status": "error", "error": str(e)[:300]}
     write_json(state / "snapshot.json", snap)
