@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from kepler import config, controller
-from kepler.cli import demo_config, main
+from kepler.cli import demo_config, main, summary
 from kepler.sources.base import AdRow, SourceData
 from kepler.sources.demo import DemoWorld
 
@@ -88,6 +88,16 @@ def test_demo_cli_runs(tmp_path, capsys):
     assert main(["demo", "--dir", str(tmp_path / "d")]) == 0
     out = capsys.readouterr().out
     assert "Opt-in to booked call" in out and "guard held" in out
+
+
+def test_summary_prints_auto_cut_errors_instead_of_nothing_to_cut(tmp_path):
+    c = demo_config(tmp_path / "d")
+    snap = controller.run_tick(c, NOW, demo_world=DemoWorld(NOW.date(), "mixed", NOW))
+    snap["auto_cut"].update(mode="live", would_pause=[], paused=[], held=[], holds=[],
+                            errors=[{"ad_id": "1102", "error": "pause sent but not verified"}])
+    out = summary(snap)
+    assert "ERROR (ID 1102): pause sent but not verified" in out
+    assert "nothing to cut" not in out
 
 
 class FakeLLM:
