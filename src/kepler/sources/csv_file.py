@@ -35,12 +35,14 @@ class CsvSource:
         if not self.path.exists():
             raise FileNotFoundError("CSV not found: %s" % self.path.name)
         mtime = dt.datetime.fromtimestamp(self.path.stat().st_mtime).astimezone()
-        data = SourceData(as_of=mtime)
+        data = SourceData(as_of=mtime, ad_leads=[] if self.kind == "ad_leads" else None)
         lo, hi = since.isoformat(), until.isoformat()
         with self.path.open(newline="") as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames or "date" not in reader.fieldnames:
                 raise ValueError("%s needs a 'date' column" % self.path.name)
+            if self.kind == "ad_leads" and not {"ad_id", "leads"} <= set(reader.fieldnames):
+                raise ValueError("ad leads CSV needs date, ad_id and leads columns")
             metrics = [c for c in reader.fieldnames if c != "date"]
             for m in metrics if self.kind == "daily" else []:
                 data.daily.setdefault(m.strip(), {})
@@ -50,10 +52,14 @@ class CsvSource:
                 if not lo <= day <= hi:
                     continue
                 if self.kind == "ad_leads":
-                    data.ad_leads.append((day, str(row["ad_id"]).strip(), int(float(row["leads"] or 0))))
+                    count = float(row["leads"])
+                    if count < 0 or not count.is_integer():
+                        raise ValueError("ad leads must be nonnegative whole counts")
+                    data.ad_leads.append((day, row["ad_id"].strip(), int(count)))
                     continue
                 for m in metrics:
                     cell = (row.get(m) or "").strip()
                     if cell:
                         data.add(m.strip(), day, float(cell))
+        data.validate()
         return data

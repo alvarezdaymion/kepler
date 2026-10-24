@@ -262,7 +262,7 @@ def ads_page(snap: dict[str, Any]) -> str:
     if not a.get("tracked"):
         return page("Ad health", "ads.html", snap, '<div class="card grey">No ad source is connected. '
                     "Add a [[sources]] entry with type = \"meta\".</div>")
-    cls = {"cut": "red", "warning": "yellow", "keep": "green", "testing": "grey"}
+    cls = {"cut": "red", "warning": "yellow", "keep": "green", "testing": "grey", "not_tracked": "grey"}
     rows = []
     for r in a["rows"]:
         rows.append("<tr><td>%s<div class=sub>ID %s · %s</div></td><td class=n>%s</td><td class=n>%s</td>"
@@ -281,7 +281,7 @@ def ads_page(snap: dict[str, Any]) -> str:
             '<div class="card wrap"><table><tr><th>Ad</th><th>Spend</th><th>Impr.</th><th>Leads</th><th>CPL</th>'
             "<th>Verdict</th></tr>%s</table></div>%s"
             % (num(a["target_cpl"], "money"), num(a["floor"], "money"),
-               (dt.date.fromisoformat(snap["generated_at"][:10]) - dt.date.fromisoformat(a["since"])).days,
+               (dt.date.fromisoformat(a["until"]) - dt.date.fromisoformat(a["since"])).days + 1,
                a["leads_from"], shared, "".join(rows), autocut_html(snap)))
     return page("Ad health", "ads.html", snap, body)
 

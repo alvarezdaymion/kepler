@@ -2,7 +2,7 @@ import datetime as dt
 
 from kepler import ads, config
 from kepler.metrics import MetricStore
-from kepler.sources.base import AdRow
+from kepler.sources.base import AdRow, SourceData
 
 T = 25.0
 
@@ -43,7 +43,9 @@ def test_warning_turns_into_cut_after_the_limit(tmp_path):
     state: dict = {}
     t0 = dt.datetime(2026, 1, 31, 9, tzinfo=dt.UTC)
     assert ads.build(store, cfg, state, t0)["rows"][0]["verdict"] == "warning"
-    assert ads.build(store, cfg, state, t0 + dt.timedelta(hours=71))["rows"][0]["verdict"] == "warning"
+    for minutes in range(15, 73 * 60, 15):
+        result = ads.build(store, cfg, state, t0 + dt.timedelta(minutes=minutes))
+        assert result["rows"][0]["verdict"] == ("warning" if minutes <= 72 * 60 else "cut")
     row = ads.build(store, cfg, state, t0 + dt.timedelta(hours=73))["rows"][0]
     assert row["verdict"] == "cut" and "in warning for 73 h" in row["reason"]
 
@@ -58,3 +60,52 @@ def test_leaving_warning_resets_the_clock(tmp_path):
     store.ads = [AdRow("2026-01-20", "1", "A", "", "ACTIVE", 120, 6000, 60, 6)]  # CPL 20: keep
     ads.build(store, cfg, state, t0 + dt.timedelta(hours=1))
     assert "1" not in state["warning_since"]
+
+
+def test_selected_lead_source_distinguishes_unknown_and_empty(tmp_path):
+    now = dt.datetime(2026, 1, 31, 12, tzinfo=dt.UTC)
+    store = MetricStore(now.date())
+    store.add_source("meta", SourceData(now, ads=[
+        AdRow("2026-01-31", "1", status="ACTIVE", spend=90, impressions=4000, leads=8)
+    ]), False)
+    cfg = config.from_dict({"ads": {"leads_from": "ad_leads"}}, tmp_path)
+    missing = ads.build(store, cfg, {}, now)
+    assert missing["leads_from"] == "crm"
+    assert missing["rows"][0]["leads"] is None
+    assert missing["rows"][0]["verdict"] == "not_tracked"
+    store.add_source("crm", SourceData(now, ad_leads=[]), False)
+    empty = ads.build(store, cfg, {}, now)
+    assert empty["rows"][0]["leads"] == 0
+    assert empty["rows"][0]["verdict"] == "cut"
+
+
+def test_judgment_window_excludes_old_and_future_rows(tmp_path):
+    now = dt.datetime(2026, 1, 31, 12, tzinfo=dt.UTC)
+    store = MetricStore(now.date())
+    store.ads = [AdRow((now.date() + dt.timedelta(days=offset)).isoformat(), "1", spend=1)
+                 for offset in range(-30, 2)]
+    cfg = config.from_dict({}, tmp_path)
+    result = ads.build(store, cfg, {}, now)
+    assert result["since"] == "2026-01-02"
+    assert result["until"] == "2026-01-31"
+    assert result["rows"][0]["spend"] == 30
+    cfg.data["ads"]["judge_days"] = 1
+    assert ads.build(store, cfg, {}, now)["rows"][0]["spend"] == 1
+
+
+def test_warning_restarts_after_disappearance_or_unobserved_gap(tmp_path):
+    now = dt.datetime(2026, 1, 31, 12, tzinfo=dt.UTC)
+    cfg = config.from_dict({}, tmp_path)
+    store = MetricStore(now.date())
+    rows = [AdRow("2026-01-31", "1", status="ACTIVE", spend=120, impressions=6000, leads=3)]
+    for disappears in (False, True):
+        state = {}
+        store.ads = rows
+        ads.build(store, cfg, state, now)
+        if disappears:
+            store.ads = []
+            ads.build(store, cfg, state, now + dt.timedelta(minutes=15))
+        store.ads = rows
+        result = ads.build(store, cfg, state, now + dt.timedelta(hours=80))
+        assert result["rows"][0]["verdict"] == "warning"
+        assert result["rows"][0]["hours_in_warning"] == 0

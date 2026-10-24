@@ -69,3 +69,15 @@ def test_ranking_order_biggest_first():
     steps = [rate("a", 0.5, 1000, 400), rate("b", 0.5, 400, 100)]
     ranked = chain(steps, 100)
     assert ranked[0]["at_stake"] >= ranked[1]["at_stake"]
+
+
+@pytest.mark.parametrize("k,n,p,expected", [
+    (550, 1100, 0.5, 0.5120258288841159), (600, 900, 0.65, 0.8607901702095330),
+    (-1, 10, 0.5, 0), (10, 10, 0.5, 1), (0, 10, 0, 1), (9, 10, 1, 0),
+])
+def test_binomial_cdf_boundaries_and_large_volumes(k, n, p, expected):
+    assert binom_cdf(k, n, p) == pytest.approx(expected, abs=1e-10)
+
+
+def test_large_sample_above_benchmark_does_not_flag_early():
+    assert evaluate(rate("close", 0.65, 900, 600, min_volume=1000), 1000)["status"] == "too_early"

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .base import AdRow, SourceData
@@ -152,6 +153,15 @@ class DemoSource:
         rows = [r for r in self.world.ads if r.ad_id == ad_id and since.isoformat() <= r.date <= until.isoformat()]
         return round(sum(r.spend for r in rows), 2), sum(r.impressions for r in rows)
 
-    def pause_ad(self, ad_id: str) -> dict[str, str]:
+    def preflight_ad(self, ad_id: str) -> dict[str, str]:
+        row = next(a for a in ADS if a.ad_id == ad_id)
+        return {"status": "PAUSED" if ad_id in self.world.paused else row.status}
+
+    def pause_ad(self, ad_id: str, on_ack: Callable[[], None] | None = None,
+                 before_send: Callable[[], None] | None = None) -> dict[str, str]:
+        if before_send is not None:
+            before_send()
         self.world.paused.append(ad_id)
+        if on_ack is not None:
+            on_ack()
         return {"before": "ACTIVE", "after": "PAUSED"}

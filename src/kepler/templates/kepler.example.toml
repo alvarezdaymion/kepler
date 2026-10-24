@@ -1,10 +1,10 @@
 # Kepler configuration. Copy to kepler.toml (`kepler init` does it) and edit.
 # Every value has a default in src/kepler/config.py; delete anything you don't need to change.
-# Credentials never go in this file. They come from environment variables (see .env.example).
+# Credentials come from the environment: use `uv run --env-file .env kepler run` (see .env.example).
 
 [business]
 name = "Your business"
-currency = "USD"
+currency = "USD"           # currently the only supported currency
 
 [goal]
 sales_per_day = 1          # the goal everything is worked back from
@@ -61,21 +61,22 @@ action = "Review call recordings against your offer and objections."
 target_cpl = 25            # T, your target cost per lead
 floor_multiple = 2         # under 2T spend an ad is "testing" and never cut
 cut_multiple = 2           # over 2T per lead is a cut
-warning_max_hours = 72     # T < CPL <= 2T is a warning; cut if it stays there longer than this
-judge_days = 30            # verdicts use cumulative numbers over this many days
+warning_max_hours = 72     # requires continuous healthy observations; gaps over two ticks reset it
+judge_days = 30            # exactly this many dates including today, also used for guard re-reads
 leads_from = "ads"         # "ads" = the ad platform's lead count; "ad_leads" = a CRM CSV keyed by ad ID
+# Missing CRM data holds cuts; a successful empty export means zero. No platform fallback.
 
 [auto_cut]
 mode = "off"               # off | dry-run | live. Run dry-run for a while and read the Ad health page first.
 source = "meta"            # the source that can re-read an ad and pause it
 max_pauses_per_run = 3     # more candidates than this at once = hold everything
-max_snapshot_age_minutes = 20
+max_snapshot_age_minutes = 20  # both checking modes also require healthy ad and selected lead sources
 spend_tolerance = 1.0      # hold if the snapshot's spend is over the fresh read by more than this
 max_cpm = 500              # hold if cost per 1,000 impressions is above this (impossible numbers)
 
 [analysis]
 enabled = false            # needs `uv sync --extra llm` and ANTHROPIC_API_KEY
-every_minutes = 1440       # at most one model call per day; the 15-minute loop never calls it more often
+every_minutes = 1440       # at most one attempt per day, including failures and interruptions; no SDK retries
 model = "claude-opus-5-5"
 effort = "low"
 

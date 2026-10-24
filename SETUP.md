@@ -12,14 +12,14 @@ Show the owner the printed summary and, if they want, `uv run kepler demo --serv
 
 ## 2. Pick the goal and rates
 
-Run `uv run kepler init` to create `kepler.toml`, then ask:
+Run `uv run kepler init` to create `kepler.toml` and copy `.env.example` to `.env`, then ask:
 
-1. **The goal.** Sales per day (or a fraction: 0.5 is one every two days) and the average revenue per sale.
+1. **The goal.** Sales per day (or a fraction: 0.5 is one every two days) and the average revenue per sale. Only USD is currently supported; do not configure another currency or import amounts in a different currency.
 2. **The funnel.** Which steps a buyer goes through. The default is impressions → link clicks → opt-ins → booked calls → held calls → sales. Remove or rename steps to match (steps must chain: each `from` is the previous step's `to`). Businesses without calls might use impressions → clicks → opt-ins → sales.
 3. **Benchmarks.** For each step, the rate they should hit. If they have six months of their own numbers, use those. Otherwise keep the defaults and say they are starting lines to replace with real data.
 4. **Target cost per lead** (`[ads] target_cpl`) if they run paid ads. A useful starting point: revenue per sale × (lead → sale rate) × the share of revenue they can spend on ads.
 
-Done when `uv run kepler check` prints "Config OK" and the goal you agreed.
+Done when `uv run --env-file .env kepler check` prints "Config OK" and the goal you agreed.
 
 ## 3. Connect sources
 
@@ -31,11 +31,13 @@ Add a `[[sources]]` block per system (examples are commented at the bottom of `k
 
 A metric no source provides shows as "Not tracked". That is expected; do not fill it with zeros.
 
-Done when `uv run kepler check` shows "env set" or "file found" for every source and `uv run kepler run` lists each source as `ok`. If one is `missing` or `stale`, read its error in the output and fix it before moving on.
+For CRM ad leads, set `leads_from = "ad_leads"`. A successful CSV with the required headers and no rows means zero leads. A failed export means unknown; it never falls back to platform leads. Ad lead counts must be explicit nonnegative whole numbers. Malformed responses, invalid caches and incomplete pagination cannot be used as healthy data.
+
+Done when `uv run --env-file .env kepler check` shows "env set" or "file found" for every source and `uv run --env-file .env kepler run` lists each source as `ok`. The CLI does not load `.env` itself. If a source is `missing` or `stale`, read its error in the output and fix it before moving on.
 
 ## 4. Schedule the controller every 15 minutes
 
-Pick the example for their system in `examples/scheduling/` (launchd on macOS, systemd on Linux, cron anywhere), replace `/path/to/kepler` and `/path/to/uv` (`which uv`), and install it. For the page, run `uv run kepler serve` (localhost only) or point any static file server at `site/`.
+Pick the example for their system in `examples/scheduling/` (launchd on macOS, systemd on Linux, cron anywhere), replace `/path/to/kepler` and `/path/to/uv` (`which uv`), and install it. These examples already load `.env`. For the page, run `uv run --env-file .env kepler serve` (localhost only) or point any static file server at `site/`. Keep a persistent state directory on a local filesystem with file locks; overlapping ticks using it are serialized.
 
 Done when `state/snapshot.json` has a `generated_at` within the last 15 minutes after a wait, and the Data health table shows recent data ages.
 
@@ -49,6 +51,10 @@ Auto-cut ships with `mode = "off"`. Only if the owner wants it:
 
 It only ever pauses ads. Do not change the rules in `src/kepler/ads.py` or the guard in `src/kepler/guard.py` to get a cut through; change `[ads]` thresholds in `kepler.toml` if the owner decides the targets are wrong.
 
+Both dry-run and live hold cuts on stale or missing ad and selected CRM data and apply the same campaign and status preflight. Judgment covers exactly `judge_days` dates including today. Warning timers reset on disappearance, stale inputs, or observation gaps longer than twice the controller interval.
+
+Live attempts are durably journaled before writing in `state/auto-cut.jsonl`. Acknowledgment and verification are recorded separately; failed verification is an error. Previously attempted ads are never retried automatically. If an outcome is uncertain, inspect the provider and journal with the owner and handle further action manually. Preserve the journal; do not delete it to force a retry.
+
 ## 6. Optional: the analysis panel
 
-If the owner wants a written read-out: `uv sync --extra llm`, put `ANTHROPIC_API_KEY` in `.env`, set `[analysis] enabled = true`. It makes one model call per `every_minutes` (once a day by default); tell them that is the only metered cost. The model only explains numbers Kepler computed.
+If the owner wants a written read-out: `uv sync --extra llm`, put `ANTHROPIC_API_KEY` in `.env`, set `[analysis] enabled = true`, and run with `uv run --env-file .env kepler run`. It makes at most one model request attempt per `every_minutes` (once a day by default), including failures, refusals and interrupted attempts; SDK retries are disabled. Attempts are saved before calling. Tell them that is the only metered cost. The model only explains numbers Kepler computed.

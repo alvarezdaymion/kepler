@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -161,6 +162,8 @@ class Config:
 
 
 def validate(data: dict[str, Any]) -> None:
+    if data["business"]["currency"] != "USD":
+        raise ValueError("business.currency must be USD; other currencies are not supported")
     steps = data["funnel"]["steps"]
     if not steps:
         raise ValueError("funnel.steps is empty")
@@ -173,8 +176,24 @@ def validate(data: dict[str, Any]) -> None:
             raise ValueError("benchmark for %r must be a rate between 0 and 1" % step["label"])
     if data["auto_cut"]["mode"] not in ("off", "dry-run", "live"):
         raise ValueError("auto_cut.mode must be off, dry-run or live")
-    if float(data["ads"]["target_cpl"]) <= 0:
-        raise ValueError("ads.target_cpl must be above 0")
+    for section, keys in {
+        "ads": ("target_cpl", "floor_multiple", "cut_multiple", "warning_max_hours", "judge_days"),
+        "auto_cut": ("max_pauses_per_run", "max_snapshot_age_minutes", "max_cpm", "spend_tolerance"),
+        "analysis": ("every_minutes",), "controller": ("every_minutes",),
+    }.items():
+        for key in keys:
+            value = data[section][key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or \
+                    value < 0 or (value == 0 and key != "spend_tolerance"):
+                raise ValueError("%s.%s must be a finite positive number" % (section, key))
+    for section, key in (("ads", "judge_days"), ("auto_cut", "max_pauses_per_run")):
+        if int(data[section][key]) != data[section][key]:
+            raise ValueError("%s.%s must be a whole count" % (section, key))
+    if data["ads"]["leads_from"] not in ("ads", "ad_leads"):
+        raise ValueError("ads.leads_from must be ads or ad_leads")
+    for source in data["sources"]:
+        if source.get("type") == "stripe" and source.get("currency", "usd").lower() != "usd":
+            raise ValueError("Stripe currency must be usd to match business.currency")
     names = [s["name"] for s in data["sources"]]
     if len(names) != len(set(names)):
         raise ValueError("source names must be unique")

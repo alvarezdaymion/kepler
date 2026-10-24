@@ -41,20 +41,38 @@ class StripeSource:
         start = int(dt.datetime.combine(since, dt.time()).astimezone().timestamp())
         params: dict[str, Any] = {"limit": 100, "created[gte]": start}
         data = SourceData(as_of=dt.datetime.now().astimezone())
-        for _ in range(MAX_PAGES):
+        for page in range(MAX_PAGES):
             body = self.http.get(API, params)
-            charges = body.get("data", [])
+            if not isinstance(body, dict) or not isinstance(body.get("data"), list) or \
+                    not isinstance(body.get("has_more"), bool):
+                raise RuntimeError("Stripe returned an invalid charges page")
+            charges = body["data"]
+            if any(not isinstance(c, dict) for c in charges):
+                raise RuntimeError("Stripe returned an invalid charge row")
             for c in charges:
                 self._add(data, c, until)
-            if not body.get("has_more") or not charges:
+            if not body["has_more"]:
                 break
+            if not charges or page == MAX_PAGES - 1:
+                raise RuntimeError("Stripe read incomplete: pagination did not finish")
             params["starting_after"] = charges[-1]["id"]
+        else:
+            raise RuntimeError("Stripe read incomplete: pagination limit reached")
         for m in ("sales", "cash", "refunds"):
             data.daily.setdefault(m, {})
+        data.validate()
         return data
 
     def _add(self, data: SourceData, c: dict[str, Any], until: dt.date) -> None:
-        if c.get("status") != "succeeded" or not c.get("paid") or not c.get("captured"):
+        if not isinstance(c.get("id"), str) or not c["id"] or c.get("status") not in ("succeeded", "failed", "pending"):
+            raise RuntimeError("Stripe returned an invalid charge")
+        if c["status"] != "succeeded":
+            return
+        if not all(isinstance(c.get(k), bool) for k in ("paid", "captured")) or \
+                not all(isinstance(c.get(k), int) and not isinstance(c[k], bool) and c[k] >= 0
+                        for k in ("created", "amount")) or not isinstance(c.get("currency"), str):
+            raise RuntimeError("Stripe returned invalid charge fields")
+        if not c["paid"] or not c["captured"]:
             return
         if str(c.get("currency", "")).lower() != self.currency:
             return

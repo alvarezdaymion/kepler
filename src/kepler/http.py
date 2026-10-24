@@ -1,7 +1,7 @@
 """A tiny JSON-over-HTTPS client. Stdlib only.
 
-`transport` is swappable so tests never touch the network. Errors never include the request's
-headers, so tokens can't leak into logs or the page.
+`transport` is swappable so tests never touch the network. Errors omit provider text, request
+details and transport messages, which can reflect credentials.
 """
 
 from __future__ import annotations
@@ -40,15 +40,18 @@ class Http:
         self.timeout = timeout
 
     def _do(self, method: str, url: str, body: bytes | None, extra: dict[str, str]) -> Any:
-        status, raw = self.transport(method, url, {**self.headers, **extra}, body, self.timeout)
         try:
-            data = json.loads(raw or b"{}")
-        except ValueError:
-            data = {}
+            status, raw = self.transport(method, url, {**self.headers, **extra}, body, self.timeout)
+        except Exception:
+            raise HttpError("%s request failed in transport" % method) from None
         if status >= 400:
-            err = data.get("error") if isinstance(data, dict) else None
-            msg = err.get("message") if isinstance(err, dict) else (err if isinstance(err, str) else "")
-            raise HttpError("%s %s returned HTTP %d %s" % (method, url.split("?")[0], status, msg or ""))
+            raise HttpError("%s request returned HTTP %d" % (method, status))
+        try:
+            data = json.loads(raw, parse_constant=_invalid_constant)
+        except (ValueError, UnicodeError):
+            raise HttpError("%s request returned invalid JSON" % method) from None
+        if isinstance(data, dict) and "error" in data:
+            raise HttpError("%s request returned a provider error" % method)
         return data
 
     def get(self, url: str, params: dict[str, Any] | None = None) -> Any:
@@ -59,3 +62,7 @@ class Http:
     def post_form(self, url: str, form: dict[str, str]) -> Any:
         body = urllib.parse.urlencode(form).encode()
         return self._do("POST", url, body, {"Content-Type": "application/x-www-form-urlencoded"})
+
+
+def _invalid_constant(value: str) -> None:
+    raise ValueError("nonfinite JSON number")

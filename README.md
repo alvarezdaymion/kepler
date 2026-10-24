@@ -16,7 +16,7 @@ uv run kepler demo --serve        # synthetic data, no keys; open http://127.0.0
 
 `kepler demo --scenario mixed` shows a funnel where every step converts, so the ranking spreads out.
 
-To use your own data, run `uv run kepler init`, edit `kepler.toml`, put credentials in `.env`, then `uv run kepler check` and `uv run kepler run`. Or hand the repo to your coding agent and say "set up Kepler for my business": [SETUP.md](SETUP.md) is written for it.
+To use your own data, run `uv run kepler init`, copy `.env.example` to `.env`, edit `kepler.toml`, and put credentials in `.env`. Then run `uv run --env-file .env kepler check` and `uv run --env-file .env kepler run`. The CLI does not load `.env` itself; use `--env-file .env` for manual commands that need credentials, including `kepler serve` if it needs to build the pages. Or hand the repo to your coding agent and say "set up Kepler for my business": [SETUP.md](SETUP.md) is written for it.
 
 ## What you see
 
@@ -34,12 +34,14 @@ To use your own data, run `uv run kepler init`, edit `kepler.toml`, put credenti
 `kepler run` is one controller tick. Schedule it every 15 minutes (launchd, cron and systemd examples are in [examples/scheduling](examples/scheduling)).
 
 1. Every configured source is read. Sources are read-only.
-2. A source that fails keeps its last good copy and is labelled **stale**. One whose data is older than its `max_age_minutes` is stale too. One that has never been read is **missing**, and its metrics are unknown.
+2. A source that fails keeps its last good copy and is labelled **stale**. Malformed responses and unfinished pagination fail the read too. Data older than `max_age_minutes`, or dated more than a minute in the future, is stale. A source without a usable cache is **missing**, and its metrics are unknown. Successful empty reads provide real zeros.
 3. Every number is computed in Python from that data.
 4. Auto-cut runs (off by default), then the optional analysis (at most once a day by default).
 5. `state/snapshot.json` and the HTML pages in `site/` are rewritten. `kepler serve` serves them on localhost.
 
 A failing source, auto-cut or analysis never stops the rest of the tick.
+
+An interprocess lock serializes ticks using the same state directory, including analysis and page writes. Keep this directory on a local filesystem with working file locks and preserve it between runs.
 
 ## Data sources
 
@@ -50,11 +52,11 @@ A failing source, auto-cut or analysis never stops the rest of the tick.
 | CSV import | Real | Any daily metric (CRM opt-ins, bookings and shows; email; Search Console; YouTube; partners) and CRM leads per ad ID |
 | Demo | Synthetic | Everything above, for `kepler demo` |
 
-There are no built-in connectors for CRMs such as GoHighLevel, for Google Search Console or for YouTube. Export a daily CSV from those tools (templates in [examples/csv](examples/csv)), or write a connector: a class with a `name` and `fetch(since, until)` that returns a `SourceData` (see `src/kepler/sources/base.py`).
+There are no built-in connectors for CRMs, Google Search Console or YouTube. Export a daily CSV from those tools (templates in [examples/csv](examples/csv)), or write a connector: a class with a `name` and `fetch(since, until)` that returns a `SourceData` (see `src/kepler/sources/base.py`).
 
 ## Ad rules and auto-cut
 
-T is your target cost per lead (`[ads] target_cpl`). Verdicts use each ad's cumulative numbers over the last 30 days:
+T is your target cost per lead (`[ads] target_cpl`). Verdicts use exactly `judge_days` dates (30 by default), including today, for both aggregation and guard re-reads:
 
 | Condition | Verdict |
 |---|---|
@@ -64,20 +66,24 @@ T is your target cost per lead (`[ads] target_cpl`). Verdicts use each ad's cumu
 | Cost per lead over T, up to 2T | Warning. Becomes a cut once it has stayed in warning longer than `warning_max_hours` (72 by default). |
 | Cost per lead over 2T | Cut |
 
+Warning time must be continuously observed: disappearance, stale inputs, or a gap longer than twice `controller.every_minutes` resets it. With `leads_from = "ad_leads"`, a successful empty CRM export means zero leads; an unavailable export means "Not tracked" and holds cuts. Platform leads never replace the selected CRM counts.
+
 Auto-cut has three modes, set with `[auto_cut] mode`:
 
 - `off` (default): nothing is read or changed. The Ad health page lists what the rules would cut.
-- `dry-run`: each candidate is re-read and checked by the guard. Nothing is changed. Run this for a while first.
+- `dry-run`: each candidate passes the same status, campaign, input-health and guard checks as live. Nothing is changed. Run this for a while first.
 - `live`: the same checks, then each ad that passes is set to paused and read back.
 
-It only ever pauses. It never turns an ad on, never changes a budget and never edits anything else, and the Meta connector refuses any other write before it is sent. It also holds when the snapshot is more than 20 minutes old, when more than 3 ads would be paused in one run, or when `campaign_ids` is set and the ad is outside it. Every live pause is logged to `state/auto-cut.jsonl`.
+It only ever pauses. It never turns an ad on, never changes a budget and never edits anything else, and the Meta connector refuses any other write before it is sent. Both checking modes hold when the snapshot is more than 20 minutes old, when any required ad or selected lead source is stale, missing or uncertain, when more than 3 ads would be paused in one run, or when `campaign_ids` excludes the ad. Freshness is checked again immediately before sending a live pause. Ad inputs must come exclusively from the configured auto-cut source.
+
+Every live attempt is durably reserved in `state/auto-cut.jsonl` before writing, followed by acknowledgment and a confirmed or uncertain outcome. Failed verification is reported as an error. Any previously attempted ad is held on later runs, even if the process stopped before recording its outcome. Inspect the journal and the provider directly and handle any further action manually; do not delete the journal to retry an uncertain pause.
 
 ### The bad-data guard
 
 Bulk reports are sometimes wrong. One data pull said a brand-new ad had spent $74 on 11 impressions; its real spend was $3.25. Cutting on that pauses an ad that is working. Kepler has two protections:
 
 1. **Everything is keyed by ad ID, never by ad name.** Duplicating a campaign copies ad names, and totals summed by name would give a new ad an old ad's spend.
-2. **Before any cut, that one ad's spend is re-read straight from the source.** The cut is held when the snapshot shows more than $1 (`spend_tolerance`) above the fresh read, or when either read implies a cost per 1,000 impressions above $500 (`max_cpm`), or spend with no impressions.
+2. **Before any cut, that one ad's spend is re-read straight from the source.** The cut is held when either read has invalid or negative numbers, when the snapshot shows more than $1 (`spend_tolerance`) above the fresh read, or when either read implies a cost per 1,000 impressions above $500 (`max_cpm`), or spend with no impressions.
 
 `tests/test_guard.py`, `tests/test_ads.py` and `tests/test_autocut.py` reproduce the $74.49-on-11-impressions read and a duplicated ad name.
 
@@ -85,6 +91,7 @@ Bulk reports are sometimes wrong. One data pull said a brand-new ad had spent $7
 
 Everything lives in `kepler.toml` (start from `uv run kepler init`; defaults are in `src/kepler/config.py`):
 
+- `[business]`: name and currency. Currently only `USD` is supported; Stripe sources must also use `usd`. Other currencies are rejected.
 - `[goal]`: sales per day and revenue per sale.
 - `[[funnel.steps]]`: each step's `from` and `to` metric, benchmark rate, minimum volume before it's judged, and the action to show.
 - `[windows]`: pace window (7 days), conversion-rate window (30 days), lane window (7 days).
@@ -95,7 +102,7 @@ Everything lives in `kepler.toml` (start from `uv run kepler init`; defaults are
 
 ## Cost
 
-Reading Meta and Stripe is free, so the 15-minute loop costs nothing to run. The only metered call is the optional analysis panel: one model request per `every_minutes` (1,440, once a day, by default), no matter how often the controller ticks. With it off, the panel says so and everything else works.
+Reading Meta and Stripe is free, so the 15-minute loop costs nothing to run. The only metered call is the optional analysis panel: at most one model request attempt per `every_minutes` (1,440, once a day, by default), including refusals, failures and interrupted calls. Attempts are persisted before calling and SDK retries are disabled. With it off, the panel says so and everything else works.
 
 ## Development
 

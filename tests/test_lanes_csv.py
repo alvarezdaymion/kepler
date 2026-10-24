@@ -5,6 +5,7 @@ import pytest
 
 from kepler import config, lanes
 from kepler.metrics import MetricStore
+from kepler.sources.base import SourceData
 from kepler.sources.csv_file import CsvSource
 
 
@@ -55,3 +56,22 @@ def test_csv_ad_leads(tmp_path):
     p.write_text("date,ad_id,leads\n2026-01-30,1203,4\n")
     data = CsvSource("x", p, kind="ad_leads").fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
     assert data.ad_leads == [("2026-01-30", "1203", 4)]
+
+
+def test_empty_crm_export_declares_lead_availability(tmp_path):
+    p = tmp_path / "leads.csv"
+    p.write_text("date,ad_id,leads\n")
+    data = CsvSource("crm", p, kind="ad_leads").fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+    store = MetricStore(dt.date(2026, 1, 31))
+    store.add_source("crm", data, False)
+    assert store.has_ad_leads
+    assert SourceData.from_json(data.to_json()).ad_leads == []
+
+
+@pytest.mark.parametrize("content", ["date\n", "date,ad_id,leads\n2026-01-30,1,\n",
+                                         "date,ad_id,leads\n2026-01-30,1,-1\n"])
+def test_crm_export_rejects_missing_or_invalid_counts(tmp_path, content):
+    p = tmp_path / "leads.csv"
+    p.write_text(content)
+    with pytest.raises(ValueError):
+        CsvSource("crm", p, kind="ad_leads").fetch(dt.date(2026, 1, 1), dt.date(2026, 1, 31))

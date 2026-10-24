@@ -16,6 +16,7 @@ Pure functions: no I/O, no clock.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -39,16 +40,23 @@ class Step:
 
 def binom_cdf(k: int, n: int, p: float) -> float:
     """P(X <= k) for X ~ Binomial(n, p)."""
-    if n <= 0:
+    if k < 0:
+        return 0.0
+    if n <= 0 or k >= n or p <= 0:
         return 1.0
     if p >= 1:
         return 0.0 if k < n else 1.0
-    term = (1 - p) ** n
-    total = term
-    for i in range(1, k + 1):
-        term *= (n - i + 1) / i * p / (1 - p)
+    if k > n * p:
+        return 1.0 - binom_cdf(n - k - 1, n, 1 - p)
+    log_mass = (math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+                + k * math.log(p) + (n - k) * math.log1p(-p))
+    term = total = 1.0
+    for i in range(k, 0, -1):
+        term *= i / (n - i + 1) * (1 - p) / p
         total += term
-    return min(1.0, total)
+        if term <= total * 1e-16:
+            break
+    return min(1.0, math.exp(log_mass + math.log(total)))
 
 
 def evaluate(step: Step, revenue_per_sale: float) -> dict[str, Any]:

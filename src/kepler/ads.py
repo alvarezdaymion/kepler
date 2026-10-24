@@ -48,7 +48,8 @@ def decide(spend: float, leads: int, target: float, floor_multiple: float = 2.0,
     return "keep", "%s, at or under the %s target" % (each, money(target))
 
 
-def aggregate(rows: list[AdRow], since: str, ad_leads: list[tuple[str, str, int]] | None = None
+def aggregate(rows: list[AdRow], since: str, ad_leads: list[tuple[str, str, int]] | None = None,
+              until: str | None = None
               ) -> dict[str, dict[str, Any]]:
     """Totals per ad ID from `since` on. The latest row's name and status win.
     With `ad_leads` (from a CRM), leads come from there instead of the ad rows."""
@@ -56,7 +57,7 @@ def aggregate(rows: list[AdRow], since: str, ad_leads: list[tuple[str, str, int]
                                                           "leads": 0, "name": "", "status": "",
                                                           "campaign_id": "", "last": ""})
     for r in rows:
-        if r.date < since:
+        if r.date < since or (until is not None and r.date > until):
             continue
         a = acc[r.ad_id]
         a["spend"] += r.spend
@@ -69,7 +70,7 @@ def aggregate(rows: list[AdRow], since: str, ad_leads: list[tuple[str, str, int]
             a["name"], a["status"], a["campaign_id"] = r.ad_name, r.status, r.campaign_id
     if ad_leads is not None:
         for day, ad_id, n in ad_leads:
-            if day >= since and ad_id in acc:
+            if day >= since and (until is None or day <= until) and ad_id in acc:
                 acc[ad_id]["leads"] += n
     for a in acc.values():
         a["spend"] = round(a["spend"], 2)
@@ -80,35 +81,58 @@ def build(store: Any, cfg: Any, state: dict[str, Any], now: dt.datetime) -> dict
     """Verdicts for every ad. `state` holds when each ad entered warning; it is updated in place."""
     a = cfg["ads"]
     target = float(a["target_cpl"])
-    since = (store.today - dt.timedelta(days=int(a["judge_days"]))).isoformat()
-    use_crm = a.get("leads_from") == "ad_leads" and store.has_ad_leads
-    totals = aggregate(store.ads, since, store.ad_leads if use_crm else None)
+    since = (store.today - dt.timedelta(days=int(a["judge_days"]) - 1)).isoformat()
+    until = store.today.isoformat()
+    use_crm = a.get("leads_from") == "ad_leads"
+    leads_available = not use_crm or store.has_ad_leads
+    totals = aggregate(store.ads, since, store.ad_leads if use_crm else None, until)
     warn_since: dict[str, str] = state.setdefault("warning_since", {})
+    warn_seen: dict[str, str] = state.setdefault("warning_seen", {})
+    for ad_id in set(warn_since) - totals.keys():
+        warn_since.pop(ad_id, None)
+        warn_seen.pop(ad_id, None)
     limit_h = float(a["warning_max_hours"])
     rows = []
     for ad_id, t in totals.items():
         level, reason = decide(t["spend"], t["leads"], target, float(a["floor_multiple"]),
                                float(a["cut_multiple"]))
+        if not leads_available:
+            t["leads"] = None
+            level, reason = "not_tracked", "Selected CRM lead source is unavailable"
         hours_in_warning = None
-        if level == "warning":
-            started = dt.datetime.fromisoformat(warn_since.setdefault(ad_id, now.isoformat()))
+        inputs = store.ad_providers.get(ad_id, set()) | (store.ad_lead_sources if use_crm else set())
+        healthy = not inputs.intersection(store.stale_sources)
+        if level == "warning" and healthy:
+            try:
+                seen = dt.datetime.fromisoformat(warn_seen[ad_id])
+                gap = (now - seen).total_seconds() / 60
+                started = dt.datetime.fromisoformat(warn_since[ad_id])
+                if gap < 0 or gap > 2 * float(cfg["controller"]["every_minutes"]):
+                    started = now
+            except (KeyError, TypeError, ValueError):
+                started = now
+            warn_since[ad_id] = started.isoformat()
+            warn_seen[ad_id] = now.isoformat()
             hours_in_warning = (now - started).total_seconds() / 3600
             if hours_in_warning > limit_h:
                 level = "cut"
                 reason += "; in warning for %.0f h (limit %.0f h)" % (hours_in_warning, limit_h)
         else:
             warn_since.pop(ad_id, None)
+            warn_seen.pop(ad_id, None)
         rows.append({"ad_id": ad_id, "ad_name": t["name"], "campaign_id": t["campaign_id"],
                      "status": t["status"], "spend": t["spend"], "impressions": t["impressions"],
+                     "sources": sorted(store.ad_providers.get(ad_id, set())),
                      "clicks": t["clicks"], "leads": t["leads"],
                      "cpl": round(t["spend"] / t["leads"], 2) if t["leads"] else None,
                      "verdict": level, "reason": reason, "hours_in_warning": hours_in_warning})
-    order = {"cut": 0, "warning": 1, "testing": 2, "keep": 3}
+    order = {"cut": 0, "warning": 1, "testing": 2, "keep": 3, "not_tracked": 4}
     rows.sort(key=lambda r: (r["status"] != "ACTIVE", order[r["verdict"]], -r["spend"]))
     names: dict[str, list[str]] = defaultdict(list)
     for r in rows:
         names[r["ad_name"]].append(r["ad_id"])
     shared = {n: ids for n, ids in names.items() if n and len(ids) > 1}
-    return {"target_cpl": target, "floor": float(a["floor_multiple"]) * target, "since": since,
+    return {"target_cpl": target, "floor": float(a["floor_multiple"]) * target, "since": since, "until": until,
+            "lead_sources": sorted(store.ad_lead_sources) if use_crm else [], "leads_available": leads_available,
             "leads_from": "crm" if use_crm else "ads", "warning_max_hours": limit_h,
             "rows": rows, "shared_names": shared}
